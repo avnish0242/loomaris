@@ -33,7 +33,6 @@ graph TB
         CDN["CDN / CloudFront"]
         GW["API Gateway\n(NGINX + Rate Limiter)"]
     end
-    
 
     subgraph "Core API Layer"
         API["FastAPI Backend\n(Stateless, Horizontally Scaled)"]
