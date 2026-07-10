@@ -1,6 +1,9 @@
 SHELL := /bin/bash
 .PHONY: dev dev-build down logs setup migrate migrate-down seed shell psql check-docker \
-        prod prod-build prod-down prod-logs prod-shell prod-migrate prod-seed ssl-init ssl-renew
+        prod prod-build prod-down prod-logs prod-shell prod-migrate prod-seed ssl-init ssl-renew \
+        tf-bootstrap tf-init tf-plan tf-apply tf-destroy \
+        ecr-login ecr-push ecs-migrate ecs-seed ecs-status _ecs-run-task \
+        poetry-lock poetry-add poetry-update lint
 
 # Detect Docker — support Docker Desktop, OrbStack, Colima, and Rancher Desktop
 DOCKER := $(shell command -v docker 2>/dev/null \
@@ -124,6 +127,28 @@ migrate-down: check-docker
 seed: check-docker
 	$(DOCKER_COMPOSE) -f docker-compose.dev.yml exec backend python scripts/seed_tenant.py
 
+seed-superadmin: check-docker
+	$(DOCKER_COMPOSE) -f docker-compose.dev.yml exec backend python scripts/seed_superadmin.py
+
+# ─── Poetry ───────────────────────────────────────────────────────────────────
+
+# Regenerate poetry.lock inside the running container (after editing pyproject.toml)
+poetry-lock: check-docker
+	$(DOCKER_COMPOSE) -f docker-compose.dev.yml exec backend poetry lock
+
+# Add a package: make poetry-add PKG=httpx
+poetry-add: check-docker
+	$(DOCKER_COMPOSE) -f docker-compose.dev.yml exec backend poetry add $(PKG)
+	$(DOCKER_COMPOSE) -f docker-compose.dev.yml exec backend poetry export -f requirements.txt --without-hashes -o /dev/null
+
+# Update all packages to latest allowed by pyproject.toml
+poetry-update: check-docker
+	$(DOCKER_COMPOSE) -f docker-compose.dev.yml exec backend poetry update
+
+# Run ruff linter inside the container
+lint: check-docker
+	$(DOCKER_COMPOSE) -f docker-compose.dev.yml exec backend poetry run ruff check .
+
 # ─── Utilities ────────────────────────────────────────────────────────────────
 
 shell: check-docker
@@ -169,3 +194,97 @@ ssl-init: check-docker
 ssl-renew: check-docker
 	$(DOCKER_COMPOSE) -f docker-compose.prod.yml run --rm certbot renew --force-renewal
 	$(DOCKER_COMPOSE) -f docker-compose.prod.yml exec nginx nginx -s reload
+
+# ─── AWS / Terraform ──────────────────────────────────────────────────────────
+
+AWS_REGION    ?= us-east-1
+AWS_ACCOUNT_ID = $(shell aws sts get-caller-identity --query Account --output text 2>/dev/null)
+ECR_REGISTRY   = $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com
+IMAGE_TAG     ?= latest
+
+# Bootstrap the S3 + DynamoDB Terraform state backend (run once before tf-init)
+tf-bootstrap:
+	@echo "Creating Terraform state backend resources..."
+	aws s3api create-bucket --bucket loomaris-tf-state --region $(AWS_REGION)
+	aws s3api put-bucket-versioning --bucket loomaris-tf-state \
+	  --versioning-configuration Status=Enabled
+	aws s3api put-bucket-encryption --bucket loomaris-tf-state \
+	  --server-side-encryption-configuration \
+	  '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+	aws dynamodb create-table --table-name loomaris-tf-locks \
+	  --attribute-definitions AttributeName=LockID,AttributeType=S \
+	  --key-schema AttributeName=LockID,KeyType=HASH \
+	  --billing-mode PAY_PER_REQUEST --region $(AWS_REGION)
+	@echo "Bootstrap complete. Now run: make tf-init"
+
+tf-init:
+	terraform -chdir=infrastructure/terraform init
+
+tf-plan:
+	terraform -chdir=infrastructure/terraform plan
+
+tf-apply:
+	terraform -chdir=infrastructure/terraform apply
+
+tf-destroy:
+	@echo "WARNING: This will destroy all production infrastructure. Type 'yes' to confirm:"
+	@read ans && [ "$$ans" = "yes" ] || (echo "Aborted." && exit 1)
+	terraform -chdir=infrastructure/terraform destroy
+
+# ─── ECR ──────────────────────────────────────────────────────────────────────
+
+ecr-login:
+	aws ecr get-login-password --region $(AWS_REGION) | \
+	  docker login --username AWS --password-stdin $(ECR_REGISTRY)
+
+ecr-push: check-docker ecr-login
+	@echo "→ Building and pushing backend (tag: $(IMAGE_TAG))..."
+	docker build --platform linux/amd64 -t $(ECR_REGISTRY)/loomaris/backend:$(IMAGE_TAG) ./backend
+	docker push $(ECR_REGISTRY)/loomaris/backend:$(IMAGE_TAG)
+	@echo "→ Building and pushing frontend (tag: $(IMAGE_TAG))..."
+	docker build \
+	  --platform linux/amd64 \
+	  --file ./frontend/Dockerfile.prod \
+	  --build-arg NEXT_PUBLIC_API_URL=https://api.loomaris.xyz \
+	  -t $(ECR_REGISTRY)/loomaris/frontend:$(IMAGE_TAG) \
+	  ./frontend
+	docker push $(ECR_REGISTRY)/loomaris/frontend:$(IMAGE_TAG)
+	@echo "Images pushed. Run 'make tf-apply' to update ECS task definitions."
+
+# ─── ECS one-off tasks ────────────────────────────────────────────────────────
+
+ecs-migrate:
+	@$(MAKE) _ecs-run-task TASK=backend CMD='["alembic","upgrade","head"]'
+
+ecs-seed:
+	@$(MAKE) _ecs-run-task TASK=backend CMD='["python","scripts/seed_tenant.py"]'
+
+_ecs-run-task:
+	$(eval SUBNETS := $(shell aws ec2 describe-subnets \
+	  --filters "Name=tag:Name,Values=loomaris-public-*" \
+	  --query 'Subnets[].SubnetId' --output text | tr '\t' ','))
+	$(eval SG := $(shell aws ec2 describe-security-groups \
+	  --filters "Name=group-name,Values=loomaris-ecs" \
+	  --query 'SecurityGroups[0].GroupId' --output text))
+	$(eval TASK_DEF := $(shell aws ecs describe-task-definition \
+	  --task-definition loomaris-$(TASK) \
+	  --query 'taskDefinition.taskDefinitionArn' --output text))
+	@aws ecs run-task \
+	  --cluster loomaris \
+	  --task-definition $(TASK_DEF) \
+	  --launch-type FARGATE \
+	  --network-configuration \
+	    "awsvpcConfiguration={subnets=[$(SUBNETS)],securityGroups=[$(SG)],assignPublicIp=ENABLED}" \
+	  --overrides \
+	    '{"containerOverrides":[{"name":"$(TASK)","command":$(CMD)}]}' \
+	  --query 'tasks[0].taskArn' --output text
+
+ecs-status:
+	@echo "=== Backend ==="
+	@aws ecs describe-services --cluster loomaris --services loomaris-backend \
+	  --query 'services[0].{Status:status,Running:runningCount,Desired:desiredCount,Pending:pendingCount}' \
+	  --output table
+	@echo "=== Frontend ==="
+	@aws ecs describe-services --cluster loomaris --services loomaris-frontend \
+	  --query 'services[0].{Status:status,Running:runningCount,Desired:desiredCount,Pending:pendingCount}' \
+	  --output table

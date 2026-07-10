@@ -52,22 +52,68 @@ export interface Me {
     email: string;
     name: string;
     picture: string;
+    is_superadmin: boolean;
     has_claude_key: boolean;
     has_cloud_account: boolean;
   };
-  org: { id: string; name: string; slug: string; plan: string } | null;
+  org: {
+    id: string;
+    name: string;
+    slug: string;
+    plan: string;
+    description: string | null;
+    join_policy: string;
+  } | null;
+  role: 'owner' | 'admin' | 'member' | null;
+  membership_status: 'active' | 'pending' | 'none';
+}
+
+export interface OrgPublic {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  join_policy: string;
+  member_count: number;
+}
+
+export interface JoinRequest {
+  user_id: string;
+  email: string;
+  name: string | null;
+  picture: string | null;
+  requested_at: string;
+}
+
+export interface OrgMember {
+  user_id: string;
+  email: string;
+  name: string | null;
+  picture: string | null;
+  role: string;
+  status: string;
+  joined_at: string;
 }
 
 export interface CloudAccount {
   id: string;
   display_name: string;
   provider: string;
-  external_id: string;
+  external_id: string;   // AWS account ID
   arn: string | null;
   region: string | null;
-  status: string;
+  status: string;        // 'verified' | 'reconnect_required' | 'pending_verification'
+  connection_type: string; // 'role' | 'keys'
+  role_arn: string | null;
+  sts_external_id: string | null;
   last_verified_at: string | null;
   created_at: string;
+}
+
+export interface CloudSetupInfo {
+  loomaris_deployer_arn: string;
+  sts_external_id: string;
+  trust_policy: Record<string, unknown>;
 }
 
 export interface AppFile {
@@ -94,47 +140,94 @@ export interface DeployStatus {
   } | null;
 }
 
-export interface CostOption {
-  id: string;
-  label: string;
-  cost_monthly: number;
-  cost_label: string;
-  description: string;
-  recommended: boolean;
-  available: boolean;
-  available_note?: string;
+export interface CostTier {
+  monthly_usd: number;
+  breakdown: string;
 }
 
 export interface CostEstimate {
-  options: CostOption[];
+  estimate_id: string;
+  status: 'pending' | 'done' | 'failed';
+  cloud_provider: string | null;
+  tier_matrix: Record<string, CostTier>;
+  summary_text: string | null;
+  created_at: string;
 }
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
 export const getMe = () => request<Me>('/api/v1/auth/me');
 export const saveClaudeKey = (api_key: string) =>
-  request<{ message: string }>('/api/v1/auth/claude-key', {
+  request<void>('/api/v1/auth/claude-key', {
     method: 'POST',
     body: JSON.stringify({ api_key }),
   });
+
+// ─── Orgs ─────────────────────────────────────────────────────────────────────
+
+export const listOrgs = () => request<OrgPublic[]>('/api/v1/orgs');
+export const createOrg = (body: {
+  name: string; slug?: string; description?: string; join_policy?: string;
+}) => request<OrgPublic>('/api/v1/orgs', { method: 'POST', body: JSON.stringify(body) });
+
+export const requestToJoin = (org_id: string) =>
+  request<{ status: string; message: string }>('/api/v1/orgs/join-request', {
+    method: 'POST',
+    body: JSON.stringify({ org_id }),
+  });
+
+export const listJoinRequests = (org_id: string) =>
+  request<JoinRequest[]>(`/api/v1/orgs/${org_id}/join-requests`);
+export const approveJoinRequest = (org_id: string, user_id: string) =>
+  request<{ ok: boolean }>(`/api/v1/orgs/${org_id}/join-requests/${user_id}/approve`, { method: 'POST' });
+export const rejectJoinRequest = (org_id: string, user_id: string) =>
+  request<{ ok: boolean }>(`/api/v1/orgs/${org_id}/join-requests/${user_id}/reject`, { method: 'POST' });
+
+export const inviteMember = (org_id: string, email: string, role = 'member') =>
+  request<{ invite_url: string }>(`/api/v1/orgs/${org_id}/invite`, {
+    method: 'POST',
+    body: JSON.stringify({ email, role }),
+  });
+export const listMembers = (org_id: string) =>
+  request<OrgMember[]>(`/api/v1/orgs/${org_id}/members`);
+export const removeMember = (org_id: string, user_id: string) =>
+  request<{ ok: boolean }>(`/api/v1/orgs/${org_id}/members/${user_id}`, { method: 'DELETE' });
+
+// ─── Admin ────────────────────────────────────────────────────────────────────
+
+export const adminListOrgs = () => request<any[]>('/api/v1/admin/orgs');
+export const adminSuspendOrg = (org_id: string) =>
+  request<{ ok: boolean }>(`/api/v1/admin/orgs/${org_id}/suspend`, { method: 'POST' });
+export const adminUnsuspendOrg = (org_id: string) =>
+  request<{ ok: boolean }>(`/api/v1/admin/orgs/${org_id}/unsuspend`, { method: 'POST' });
 
 // ─── Cloud accounts ───────────────────────────────────────────────────────────
 
 export const listCloudAccounts = () =>
   request<CloudAccount[]>('/api/v1/cloud/accounts');
 
-export const connectCloudAccount = (body: {
+export const getCloudSetupInfo = () =>
+  request<CloudSetupInfo>('/api/v1/cloud/setup-info');
+
+export const connectCloudRoleAccount = (body: {
   display_name: string;
-  access_key_id: string;
-  secret_access_key: string;
+  role_arn: string;
   region: string;
-}) => request<CloudAccount>('/api/v1/cloud/accounts', { method: 'POST', body: JSON.stringify(body) });
+}) => request<CloudAccount>('/api/v1/cloud/accounts', {
+  method: 'POST',
+  body: JSON.stringify({ provider: 'aws', ...body }),
+});
 
 export const deleteCloudAccount = (id: string) =>
   request<{ ok: boolean }>(`/api/v1/cloud/accounts/${id}`, { method: 'DELETE' });
 
 export const verifyCloudAccount = (id: string) =>
   request<CloudAccount>(`/api/v1/cloud/accounts/${id}/verify`, { method: 'POST' });
+
+export const destroyCloudDeploy = (appId: string, deploymentId: string) =>
+  request<{ deployment_id: string; task_id: string; status: string }>(
+    `/api/v1/apps/${appId}/cloud-deploy/${deploymentId}`, { method: 'DELETE' }
+  );
 
 // ─── Apps ─────────────────────────────────────────────────────────────────────
 
@@ -146,8 +239,46 @@ export const getAppFiles = (appId: string) =>
   request<AppFiles>(`/api/v1/apps/${appId}/files`);
 export const getDeployStatus = (appId: string) =>
   request<DeployStatus>(`/api/v1/apps/${appId}/deploy/status`);
-export const getCostEstimate = (appId: string) =>
-  request<CostEstimate>(`/api/v1/apps/${appId}/cost-estimate`);
+export const stopPreview = (appId: string) =>
+  request<{ ok: boolean }>(`/api/v1/apps/${appId}/preview`, { method: 'DELETE' });
+export const triggerCostEstimate = (appId: string) =>
+  request<{ estimate_id: string }>(`/api/v1/apps/${appId}/cost-estimate`, { method: 'POST' });
+export const getLatestCostEstimate = (appId: string) =>
+  request<CostEstimate>(`/api/v1/apps/${appId}/cost-estimate/latest`);
+
+export interface PreflightCheck {
+  action: string;
+  allowed: boolean;
+}
+
+export interface PreflightResult {
+  passed: boolean;
+  checked: PreflightCheck[];
+  missing: string[];
+  skipped: boolean;
+  error?: string;
+}
+
+export const runPreflight = (appId: string, cloudAccountId: string) =>
+  request<PreflightResult>(`/api/v1/apps/${appId}/preflight`, {
+    method: 'POST',
+    body: JSON.stringify({ cloud_account_id: cloudAccountId }),
+  });
+
+export interface SimulationSession {
+  session_id: string;
+  status: 'building' | 'running' | 'expired' | 'failed' | 'stopped';
+  url: string | null;
+  expires_at: string | null;
+  ttl_seconds: number;
+}
+
+export const startSimulation = (appId: string) =>
+  request<SimulationSession>(`/api/v1/apps/${appId}/simulate`, { method: 'POST' });
+export const getSimulationStatus = (appId: string) =>
+  request<SimulationSession>(`/api/v1/apps/${appId}/simulate/status`);
+export const stopSimulation = (appId: string) =>
+  request<{ ok: boolean }>(`/api/v1/apps/${appId}/simulate`, { method: 'DELETE' });
 
 export const downloadArchive = (appId: string, slug: string) => {
   const headers = authHeaders() as Record<string, string>;
@@ -166,6 +297,7 @@ export const downloadArchive = (appId: string, slug: string) => {
 // ─── Sessions ─────────────────────────────────────────────────────────────────
 
 export const listSessions = () => request<Session[]>('/api/v1/chat/sessions');
+export const getSession = (sessionId: string) => request<Session>(`/api/v1/chat/sessions/${sessionId}`);
 export const createSession = (title?: string) =>
   request<Session>('/api/v1/chat/sessions', {
     method: 'POST',

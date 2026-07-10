@@ -2,10 +2,10 @@
 
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
-import { createSession, listSessions, listCloudAccounts, type Session, type CloudAccount } from '@/lib/api';
+import { useEffect, useRef, useState } from 'react';
+import { createSession, listSessions, listCloudAccounts, getMe, type Session, type CloudAccount, type Me } from '@/lib/api';
 import { clearToken } from '@/lib/auth';
-import { Plus, MessageSquare, LogOut, Home, Sparkles, Cloud } from 'lucide-react';
+import { Plus, MessageSquare, LogOut, Home, Sparkles, Cloud, ChevronUp, Shield, Building2, Key } from 'lucide-react';
 
 function timeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -25,6 +25,9 @@ export default function Sidebar({ onOpenCloudConnect }: Props) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [creating, setCreating] = useState(false);
   const [cloudAccount, setCloudAccount] = useState<CloudAccount | null | undefined>(undefined);
+  const [me, setMe] = useState<Me | null>(null);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const profileRef = useRef<HTMLDivElement>(null);
   const params = useParams();
   const router = useRouter();
   const activeId = params?.sessionId as string | undefined;
@@ -34,6 +37,18 @@ export default function Sidebar({ onOpenCloudConnect }: Props) {
     listCloudAccounts()
       .then((accounts) => setCloudAccount(accounts.find((a) => a.status === 'verified') ?? null))
       .catch(() => setCloudAccount(null));
+    getMe().then(setMe).catch(() => {});
+  }, []);
+
+  // Close popover on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (profileRef.current && !profileRef.current.contains(e.target as Node)) {
+        setProfileOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
   }, []);
 
   const handleNew = async () => {
@@ -157,13 +172,99 @@ export default function Sidebar({ onOpenCloudConnect }: Props) {
         })}
       </div>
 
-      {/* Footer */}
-      <div className="px-3 py-3 border-t" style={{ borderColor: 'var(--border)' }}>
-        <button onClick={handleLogout}
-          className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs
-            text-slate-600 hover:text-slate-400 hover:bg-white/[0.03] transition-all group">
-          <LogOut className="w-3.5 h-3.5 group-hover:text-rose-400 transition-colors" />
-          Sign out
+      {/* Profile footer */}
+      <div className="px-3 py-3 border-t relative" style={{ borderColor: 'var(--border)' }} ref={profileRef}>
+
+        {/* Profile popover */}
+        {profileOpen && me && (
+          <div className="absolute bottom-full left-2 right-2 mb-2 rounded-xl border shadow-2xl overflow-hidden"
+            style={{ background: 'var(--card)', borderColor: 'var(--border)' }}>
+
+            {/* User info */}
+            <div className="px-4 py-3 border-b" style={{ borderColor: 'var(--border)' }}>
+              <div className="flex items-center gap-3 mb-2">
+                {me.user.picture ? (
+                  <img src={me.user.picture} alt="" className="w-9 h-9 rounded-full object-cover shrink-0" />
+                ) : (
+                  <div className="w-9 h-9 rounded-full bg-indigo-500/20 border border-indigo-500/30
+                    flex items-center justify-center shrink-0 text-sm font-semibold text-indigo-300">
+                    {me.user.name?.[0]?.toUpperCase() ?? '?'}
+                  </div>
+                )}
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-white truncate">{me.user.name}</p>
+                  <p className="text-xs text-slate-500 truncate">{me.user.email}</p>
+                </div>
+              </div>
+
+              {/* Badges */}
+              <div className="flex flex-wrap gap-1.5">
+                {me.user.is_superadmin && (
+                  <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-md
+                    bg-indigo-500/15 border border-indigo-500/25 text-indigo-300 font-medium">
+                    <Shield className="w-2.5 h-2.5" /> Superadmin
+                  </span>
+                )}
+                {me.org && (
+                  <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-md
+                    bg-white/5 border border-white/10 text-slate-400 font-medium">
+                    <Building2 className="w-2.5 h-2.5" />
+                    {me.org.name} · {me.role}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="py-1">
+              {me.user.is_superadmin && (
+                <button
+                  onClick={() => { setProfileOpen(false); router.push('/admin'); }}
+                  className="w-full flex items-center gap-2.5 px-4 py-2 text-xs text-slate-400
+                    hover:text-white hover:bg-white/[0.04] transition-all">
+                  <Shield className="w-3.5 h-3.5 text-indigo-400" />
+                  Admin panel
+                </button>
+              )}
+              {(me.role === 'owner' || me.role === 'admin' || me.user.is_superadmin) && (
+                <button
+                  onClick={() => { setProfileOpen(false); onOpenCloudConnect?.(); }}
+                  className="w-full flex items-center gap-2.5 px-4 py-2 text-xs text-slate-400
+                    hover:text-white hover:bg-white/[0.04] transition-all">
+                  <Key className="w-3.5 h-3.5 text-slate-500" />
+                  {me.user.has_claude_key ? 'Rotate API key' : 'Add API key'}
+                </button>
+              )}
+              <button
+                onClick={() => { setProfileOpen(false); handleLogout(); }}
+                className="w-full flex items-center gap-2.5 px-4 py-2 text-xs text-slate-400
+                  hover:text-rose-400 hover:bg-white/[0.04] transition-all">
+                <LogOut className="w-3.5 h-3.5" />
+                Sign out
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Profile trigger */}
+        <button
+          onClick={() => setProfileOpen((p) => !p)}
+          className="w-full flex items-center gap-2.5 px-2 py-2 rounded-xl
+            hover:bg-white/[0.04] transition-all group">
+          {me?.user.picture ? (
+            <img src={me.user.picture} alt="" className="w-7 h-7 rounded-full object-cover shrink-0" />
+          ) : (
+            <div className="w-7 h-7 rounded-full bg-indigo-500/20 border border-indigo-500/30
+              flex items-center justify-center shrink-0 text-xs font-semibold text-indigo-300">
+              {me?.user.name?.[0]?.toUpperCase() ?? '?'}
+            </div>
+          )}
+          <div className="flex-1 min-w-0 text-left">
+            <p className="text-xs font-medium text-slate-300 truncate">{me?.user.name ?? '…'}</p>
+            <p className="text-[10px] text-slate-600 truncate">{me?.org?.name ?? 'No org'}</p>
+          </div>
+          <ChevronUp className={`w-3.5 h-3.5 text-slate-600 shrink-0 transition-transform
+            ${profileOpen ? 'rotate-180' : ''}`} />
         </button>
       </div>
     </aside>

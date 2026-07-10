@@ -1,15 +1,17 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Key, X, ExternalLink, Shield, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Key, X, ExternalLink, Shield, CheckCircle2, AlertCircle, Building2 } from 'lucide-react';
 import { saveClaudeKey } from '@/lib/api';
 
 interface Props {
   onSaved: () => void;
   onDismiss: () => void;
+  orgName?: string;
+  isAdmin?: boolean;
 }
 
-export default function ApiKeyModal({ onSaved, onDismiss }: Props) {
+export default function ApiKeyModal({ onSaved, onDismiss, orgName, isAdmin = false }: Props) {
   const [key, setKey] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -32,12 +34,53 @@ export default function ApiKeyModal({ onSaved, onDismiss }: Props) {
     }
   };
 
-  // Trap focus: close on Escape
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onDismiss(); };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [onDismiss]);
+
+  if (!isAdmin) {
+    // Non-admin sees a read-only notice
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+        style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(8px)' }}>
+        <div className="w-full max-w-md rounded-2xl border p-6 shadow-2xl"
+          style={{ background: 'var(--card)', borderColor: 'var(--border)' }}>
+          <div className="flex items-start justify-between mb-5">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-500/25
+                flex items-center justify-center">
+                <Key className="w-5 h-5 text-amber-400" />
+              </div>
+              <div>
+                <h2 className="text-base font-semibold text-white">Claude API key not set</h2>
+                <p className="text-xs text-slate-500 mt-0.5">Your org admin needs to add one</p>
+              </div>
+            </div>
+            <button onClick={onDismiss}
+              className="p-1.5 rounded-lg text-slate-600 hover:text-slate-400 hover:bg-white/5 transition-colors">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="rounded-xl border p-4 mb-4"
+            style={{ background: 'rgba(245,158,11,0.06)', borderColor: 'rgba(245,158,11,0.2)' }}>
+            <p className="text-sm text-slate-300 leading-relaxed">
+              The Anthropic API key is set per organization by the org admin.
+              Ask your admin for <strong className="text-white">{orgName ?? 'your org'}</strong> to
+              add it under <span className="font-mono text-xs text-slate-400">Settings → API Key</span>.
+            </p>
+          </div>
+          <button onClick={onDismiss}
+            className="w-full py-2.5 rounded-xl text-sm font-medium text-slate-400
+              hover:text-slate-200 transition-colors border"
+            style={{ borderColor: 'var(--border)' }}>
+            Got it
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
@@ -54,7 +97,12 @@ export default function ApiKeyModal({ onSaved, onDismiss }: Props) {
             </div>
             <div>
               <h2 className="text-base font-semibold text-white">Connect Claude API</h2>
-              <p className="text-xs text-slate-500 mt-0.5">Required to generate and deploy apps</p>
+              <div className="flex items-center gap-1.5 mt-0.5">
+                <Building2 className="w-3 h-3 text-slate-500" />
+                <p className="text-xs text-slate-500">
+                  Org-wide key for <span className="text-slate-400">{orgName ?? 'your org'}</span>
+                </p>
+              </div>
             </div>
           </div>
           <button onClick={onDismiss}
@@ -67,8 +115,8 @@ export default function ApiKeyModal({ onSaved, onDismiss }: Props) {
         <div className="space-y-2 mb-5">
           {[
             { icon: Shield, text: 'Encrypted at rest with Fernet symmetric encryption' },
-            { icon: CheckCircle2, text: 'Never stored in plaintext, never committed to git' },
-            { icon: Key, text: 'Used only on your behalf when you send a message' },
+            { icon: CheckCircle2, text: 'Shared across all members of your org' },
+            { icon: Key, text: 'Only admins can set or rotate this key' },
           ].map(({ icon: Icon, text }) => (
             <div key={text} className="flex items-center gap-2.5 text-xs text-slate-400">
               <Icon className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
@@ -127,7 +175,6 @@ export default function ApiKeyModal({ onSaved, onDismiss }: Props) {
           </button>
         </div>
 
-        {/* Get key link */}
         <p className="mt-4 text-center text-xs text-slate-600">
           Don&apos;t have a key?{' '}
           <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer"

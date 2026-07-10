@@ -1,0 +1,30 @@
+# Copy to terraform.tfvars (git-ignored) and fill in real values before running terraform apply.
+
+# AWS region — must match the region where you bootstrap the state bucket
+aws_region  = "us-east-1"
+environment = "production"
+domain      = "loomaris.xyz"
+
+# GitHub repository for OIDC trust (owner/repo format)
+github_repository = "avnish0242/loomaris"
+
+# Google OAuth credentials
+# Create at: https://console.cloud.google.com/apis/credentials
+# Authorized redirect URI to add: https://api.loomaris.xyz/api/v1/auth/google/callback
+google_client_id     = "REPLACE_WITH_YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com"
+google_client_secret = "REPLACE_WITH_YOUR_GOOGLE_CLIENT_SECRET"
+
+# Anthropic API key
+anthropic_api_key = "sk-ant-REPLACE_WITH_YOUR_KEY"
+
+# Fernet encryption key — generate with:
+#   python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+encryption_key = "REPLACE_WITH_FERNET_KEY"
+
+# Image tags — default "latest", overridden by CI/CD with git SHA
+backend_image_tag  = "latest"
+frontend_image_tag = "latest"
+
+# Cost guardrails
+alert_email        = "avnish.dbg@gmail.com"  # receives Budget + Anomaly Detection alerts
+monthly_budget_usd = 160                      # alert at 80% ($128) and 100% ($160)

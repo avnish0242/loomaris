@@ -208,8 +208,24 @@ async def stream_chat(
             )
             if commit_sha:
                 assistant_turn.git_commit_sha = commit_sha
+                app_id_str = str(chat_session.app_id) if chat_session and chat_session.app_id else None
+                yield f"data: {json.dumps({'type': 'files_committed', 'app_id': app_id_str, 'app_slug': app_slug, 'commit_sha': commit_sha, 'file_count': len(generated_files)})}\n\n"
         except Exception as exc:
             log.warning("Git commit failed for app %s: %s", app_slug, exc)
+
+        # ── Enqueue post-gen security scan (non-blocking) ─────────────────────
+        try:
+            from app.workers.scan_task import scan_generated_code
+            scan_generated_code.apply_async(
+                kwargs={
+                    "turn_id": str(assistant_turn.id),
+                    "files_json": {f.path: f.content for f in generated_files},
+                    "org_slug": app_slug.split("-")[0] if "-" in app_slug else "unknown",
+                },
+                queue="scan",
+            )
+        except Exception as exc:
+            log.warning("Failed to enqueue scan task: %s", exc)
 
     # ── Update session ────────────────────────────────────────────────────────
     if chat_session:

@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from app.api.routes import apps, auth, chat, cloud, health
+from app.api.routes import admin, apps, auth, chat, cloud, health, orgs
 from app.core.config import settings
 from app.database import engine
 from app.models import org, platform  # noqa: F401 — registers ORM models with Base
@@ -41,6 +41,8 @@ app.add_middleware(
 
 app.include_router(health.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1")
+app.include_router(orgs.router, prefix="/api/v1")
+app.include_router(admin.router, prefix="/api/v1")
 app.include_router(apps.router, prefix="/api/v1")
 app.include_router(chat.router, prefix="/api/v1")
 app.include_router(cloud.router, prefix="/api/v1")

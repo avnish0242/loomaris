@@ -10,23 +10,21 @@ import { getMe } from '@/lib/api';
 export default function ChatLayout({ children }: { children: React.ReactNode }) {
   const [showKeyModal, setShowKeyModal] = useState(false);
   const [showCloudModal, setShowCloudModal] = useState(false);
+  const [orgName, setOrgName] = useState<string | undefined>();
+  const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
     getMe()
       .then((me) => {
+        const admin = me.user.is_superadmin || me.role === 'owner' || me.role === 'admin';
+        setIsAdmin(admin);
+        setOrgName(me.org?.name);
         if (!me.user.has_claude_key) {
           setShowKeyModal(true);
-        } else if (!me.user.has_cloud_account) {
-          // Don't auto-prompt cloud modal — let user discover via Sidebar
-          // but keep the state so Sidebar "Connect AWS" button can open it
         }
       })
       .catch(() => {});
   }, []);
-
-  const handleKeyModalDone = () => {
-    setShowKeyModal(false);
-  };
 
   return (
     <AuthGuard>
@@ -37,8 +35,10 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
 
       {showKeyModal && (
         <ApiKeyModal
-          onSaved={handleKeyModalDone}
-          onDismiss={handleKeyModalDone}
+          onSaved={() => setShowKeyModal(false)}
+          onDismiss={() => setShowKeyModal(false)}
+          orgName={orgName}
+          isAdmin={isAdmin}
         />
       )}
 

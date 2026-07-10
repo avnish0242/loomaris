@@ -1,0 +1,174 @@
+name: Deploy to AWS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      backend_only:
+        description: "Deploy backend only"
+        type: boolean
+        default: false
+      frontend_only:
+        description: "Deploy frontend only"
+        type: boolean
+        default: false
+
+env:
+  AWS_REGION: us-east-1
+  ECS_CLUSTER: loomaris
+  POETRY_VERSION: "1.8.3"
+
+jobs:
+  lint:
+    name: Lint & type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        run: pip install poetry==${{ env.POETRY_VERSION }}
+
+      - name: Cache Poetry deps
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pypoetry
+          key: poetry-${{ hashFiles('backend/poetry.lock') }}
+          restore-keys: poetry-
+
+      - name: Install dev dependencies
+        working-directory: backend
+        run: poetry install --with=dev --no-root
+
+      - name: Ruff lint
+        working-directory: backend
+        run: poetry run ruff check .
+
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+    needs: lint
+    permissions:
+      id-token: write  # required for OIDC authentication
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ─── Backend ──────────────────────────────────────────────────────────
+
+      - name: Build and push backend image
+        if: ${{ !inputs.frontend_only }}
+        id: backend-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          IMAGE_URI="$ECR_REGISTRY/loomaris/backend:$IMAGE_TAG"
+          docker build -t "$IMAGE_URI" ./backend
+          docker push "$IMAGE_URI"
+          echo "image_uri=$IMAGE_URI" >> $GITHUB_OUTPUT
+
+      - name: Register new backend task definition
+        if: ${{ !inputs.frontend_only }}
+        id: backend-taskdef
+        env:
+          IMAGE_URI: ${{ steps.backend-image.outputs.image_uri }}
+        run: |
+          TASK_DEF=$(aws ecs describe-task-definition \
+            --task-definition loomaris-backend \
+            --query 'taskDefinition' --output json)
+          NEW_TASK_DEF=$(echo "$TASK_DEF" | jq \
+            --arg IMAGE "$IMAGE_URI" \
+            '.containerDefinitions[0].image = $IMAGE
+             | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                   .placementConstraints, .compatibilities, .registeredAt, .registeredBy)')
+          NEW_ARN=$(aws ecs register-task-definition \
+            --cli-input-json "$NEW_TASK_DEF" \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "task_def_arn=$NEW_ARN" >> $GITHUB_OUTPUT
+
+      - name: Deploy backend ECS service
+        if: ${{ !inputs.frontend_only }}
+        run: |
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service loomaris-backend \
+            --task-definition "${{ steps.backend-taskdef.outputs.task_def_arn }}"
+
+      # ─── Frontend ─────────────────────────────────────────────────────────
+
+      - name: Build and push frontend image
+        if: ${{ !inputs.backend_only }}
+        id: frontend-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          IMAGE_URI="$ECR_REGISTRY/loomaris/frontend:$IMAGE_TAG"
+          docker build \
+            --file ./frontend/Dockerfile.prod \
+            --build-arg NEXT_PUBLIC_API_URL=https://api.loomaris.xyz \
+            -t "$IMAGE_URI" \
+            ./frontend
+          docker push "$IMAGE_URI"
+          echo "image_uri=$IMAGE_URI" >> $GITHUB_OUTPUT
+
+      - name: Register new frontend task definition
+        if: ${{ !inputs.backend_only }}
+        id: frontend-taskdef
+        env:
+          IMAGE_URI: ${{ steps.frontend-image.outputs.image_uri }}
+        run: |
+          TASK_DEF=$(aws ecs describe-task-definition \
+            --task-definition loomaris-frontend \
+            --query 'taskDefinition' --output json)
+          NEW_TASK_DEF=$(echo "$TASK_DEF" | jq \
+            --arg IMAGE "$IMAGE_URI" \
+            '.containerDefinitions[0].image = $IMAGE
+             | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                   .placementConstraints, .compatibilities, .registeredAt, .registeredBy)')
+          NEW_ARN=$(aws ecs register-task-definition \
+            --cli-input-json "$NEW_TASK_DEF" \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "task_def_arn=$NEW_ARN" >> $GITHUB_OUTPUT
+
+      - name: Deploy frontend ECS service
+        if: ${{ !inputs.backend_only }}
+        run: |
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service loomaris-frontend \
+            --task-definition "${{ steps.frontend-taskdef.outputs.task_def_arn }}"
+
+      # ─── Stabilization ────────────────────────────────────────────────────
+
+      - name: Wait for backend to stabilize
+        if: ${{ !inputs.frontend_only }}
+        run: |
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services loomaris-backend
+
+      - name: Wait for frontend to stabilize
+        if: ${{ !inputs.backend_only }}
+        run: |
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services loomaris-frontend

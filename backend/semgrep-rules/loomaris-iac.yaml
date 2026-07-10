@@ -1,0 +1,60 @@
+rules:
+  - id: hardcoded-aws-key
+    patterns:
+      - pattern: $VAR = "AKIA..."
+    message: "Hardcoded AWS Access Key ID detected — use environment variables or Vault"
+    severity: ERROR
+    languages: [python, javascript, typescript]
+
+  - id: hardcoded-aws-key-asia
+    patterns:
+      - pattern: $VAR = "ASIA..."
+    message: "Hardcoded AWS temporary Access Key detected"
+    severity: ERROR
+    languages: [python, javascript, typescript]
+
+  - id: iac-public-s3-bucket
+    patterns:
+      - pattern: aws.s3.BucketAcl(..., acl="public-read", ...)
+    message: "S3 bucket with public-read ACL — potential data exposure"
+    severity: ERROR
+    languages: [python]
+
+  - id: iac-public-s3-bucket-all
+    patterns:
+      - pattern: aws.s3.BucketAcl(..., acl="public-read-write", ...)
+    message: "S3 bucket with public-read-write ACL — severe data exposure risk"
+    severity: ERROR
+    languages: [python]
+
+  - id: iac-unrestricted-ssh
+    patterns:
+      - pattern: |
+          aws.ec2.SecurityGroupRule(..., cidr_blocks=["0.0.0.0/0"], ..., from_port=22, ...)
+    message: "SSH open to the entire internet — restrict to known IP ranges"
+    severity: ERROR
+    languages: [python]
+
+  - id: iac-unrestricted-rdp
+    patterns:
+      - pattern: |
+          aws.ec2.SecurityGroupRule(..., cidr_blocks=["0.0.0.0/0"], ..., from_port=3389, ...)
+    message: "RDP open to the entire internet — restrict to known IP ranges"
+    severity: ERROR
+    languages: [python]
+
+  - id: hardcoded-password
+    patterns:
+      - pattern: password = "..."
+      - pattern: passwd = "..."
+      - pattern: PASSWORD = "..."
+    message: "Hardcoded password detected — use environment variables or a secrets manager"
+    severity: ERROR
+    languages: [python, javascript, typescript]
+
+  - id: eval-usage
+    patterns:
+      - pattern: eval(...)
+    message: "Use of eval() is a security risk — avoid dynamic code execution"
+    severity: WARNING
+    languages: [python, javascript, typescript]

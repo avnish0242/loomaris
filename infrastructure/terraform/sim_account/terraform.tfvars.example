@@ -1,0 +1,4 @@
+aws_region            = "us-east-1"
+aws_account_id        = "123456789012"   # Loomaris sim account ID
+loomaris_deployer_arn = "arn:aws:iam::LOOMARIS_CONTROL_PLANE_ACCT:user/loomaris-deployer"
+alert_email           = "avnish.dbg@gmail.com"

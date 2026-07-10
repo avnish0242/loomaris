@@ -22,10 +22,18 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
 
+    # Super admin email (matched at login time to set is_superadmin flag)
+    SUPERADMIN_EMAIL: str = "avnish.kumar@loomaris.xyz"
+
     # Google OAuth
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
     GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/v1/auth/google/callback"
+
+    # GitHub OAuth
+    GITHUB_CLIENT_ID: str = ""
+    GITHUB_CLIENT_SECRET: str = ""
+    GITHUB_REDIRECT_URI: str = "http://localhost:8000/api/v1/auth/github/callback"
 
     # JWT
     JWT_SECRET_KEY: str = "change-me-in-production"
@@ -46,6 +54,26 @@ class Settings(BaseSettings):
 
     # LocalStack
     LOCALSTACK_AUTH_TOKEN: str = ""
+
+    # Loomaris control-plane IAM user (used for STS cross-account assume-role)
+    # Create arn:aws:iam::LOOMARIS_ACCT:user/loomaris-deployer and paste creds here.
+    LOOMARIS_DEPLOYER_ACCESS_KEY: str = ""
+    LOOMARIS_DEPLOYER_SECRET_KEY: str = ""
+
+    # S3 bucket for persistent Pulumi state (required for pulumi destroy to work)
+    # e.g. "loomaris-pulumi-state"
+    PULUMI_STATE_BUCKET: str = ""
+
+    # Loomaris AWS account ID (shown in trust policy templates to orgs)
+    LOOMARIS_AWS_ACCOUNT_ID: str = ""
+
+    # Ephemeral simulation infra (ECS Fargate in dedicated Loomaris sim AWS account)
+    SIM_ECS_CLUSTER: str = ""           # arn:aws:ecs:us-east-1:ACCT:cluster/loomaris-sim
+    SIM_ECR_BASE_URI: str = ""          # ACCT.dkr.ecr.us-east-1.amazonaws.com/loomaris-previews
+    SIM_SUBNET_ID: str = ""             # public subnet in Loomaris sim VPC
+    SIM_SECURITY_GROUP_ID: str = ""     # allows inbound on app port, outbound all
+    SIM_TASK_EXECUTION_ROLE: str = ""   # arn:aws:iam::ACCT:role/loomaris-sim-exec
+    SIM_TEARDOWN_LAMBDA_ARN: str = ""   # for EventBridge Scheduler target
 
     @property
     def is_dev(self) -> bool:

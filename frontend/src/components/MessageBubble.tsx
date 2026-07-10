@@ -38,6 +38,18 @@ const mdComponents: Components = {
     const isBlock = !!className;
     const content = String(children).replace(/\n$/, '');
 
+    // File blocks are hidden from chat — shown in the Code drawer
+    if (filePath) {
+      return (
+        <div className="inline-flex items-center gap-1.5 my-1 px-2.5 py-1 rounded-lg text-xs font-mono
+          text-indigo-300/70 border border-indigo-500/15"
+          style={{ background: 'rgba(99,102,241,0.06)' }}>
+          <FileCode className="w-3 h-3 shrink-0" />
+          {filePath}
+        </div>
+      );
+    }
+
     if (isBlock) {
       return (
         <div className="my-4 rounded-xl overflow-hidden"
@@ -45,12 +57,9 @@ const mdComponents: Components = {
           <div className="flex items-center justify-between px-4 py-2.5"
             style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}>
             <div className="flex items-center gap-2">
-              {filePath
-                ? <FileCode className="w-3.5 h-3.5 text-indigo-400" />
-                : <div className="w-2 h-2 rounded-sm bg-indigo-400/50" />
-              }
+              <div className="w-2 h-2 rounded-sm bg-indigo-400/50" />
               <span className="text-xs font-mono text-slate-400">
-                {filePath || className?.replace('language-', '') || 'code'}
+                {className?.replace('language-', '') || 'code'}
               </span>
             </div>
             <CopyButton text={content} />

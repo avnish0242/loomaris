@@ -128,6 +128,15 @@ def get_commit_log(app_slug: str, limit: int = 10) -> list[dict]:
         return []
 
 
+def checkout_commit(app_slug: str, sha: str) -> None:
+    """Reset the working tree to a specific commit (detached HEAD)."""
+    repo_path = REPOS_ROOT / app_slug
+    if not (repo_path / ".git").exists():
+        raise ValueError(f"No git repo found for app '{app_slug}'")
+    repo = git.Repo(repo_path)
+    repo.git.checkout(sha)
+
+
 def create_zip_archive(app_slug: str) -> bytes:
     """Zip the current repo state for download."""
     files = get_current_files(app_slug)

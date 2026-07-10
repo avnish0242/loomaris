@@ -75,6 +75,24 @@ CREATE TABLE IF NOT EXISTS {schema}.audit_log (
 
 CREATE INDEX IF NOT EXISTS idx_{schema_raw}_audit_log
     ON {schema}.audit_log (event_type, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS {schema}.simulation_sessions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    app_id UUID NOT NULL REFERENCES {schema}.apps(id),
+    user_id UUID NOT NULL,
+    task_arn VARCHAR(500),
+    image_uri VARCHAR(500),
+    public_ip VARCHAR(50),
+    url VARCHAR(255),
+    status VARCHAR(50) NOT NULL DEFAULT 'building',
+    ttl_seconds INTEGER NOT NULL DEFAULT 600,
+    expires_at TIMESTAMPTZ,
+    cost_usd NUMERIC(8,6),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_{schema_raw}_sim_sessions_app
+    ON {schema}.simulation_sessions (app_id, created_at DESC);
 """
 
 
@@ -130,7 +148,11 @@ async def get_or_create_default_org(db: AsyncSession) -> Organization:
 
 
 async def add_user_to_org(
-    db: AsyncSession, user_id: uuid.UUID, org_id: uuid.UUID, role: str = "owner"
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    org_id: uuid.UUID,
+    role: str = "owner",
+    status: str = "active",
 ) -> OrgMembership:
     result = await db.execute(
         select(OrgMembership).where(
@@ -140,7 +162,7 @@ async def add_user_to_org(
     )
     membership = result.scalar_one_or_none()
     if not membership:
-        membership = OrgMembership(org_id=org_id, user_id=user_id, role=role)
+        membership = OrgMembership(org_id=org_id, user_id=user_id, role=role, status=status)
         db.add(membership)
         await db.commit()
     return membership

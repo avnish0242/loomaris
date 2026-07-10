@@ -4,11 +4,11 @@ Uses the host Docker daemon via the mounted socket (/var/run/docker.sock).
 Phase 2 will replace this with Pulumi IaC targeting real cloud accounts.
 """
 import asyncio
+import hashlib
 import io
 import json
 import logging
 import tarfile
-import time
 from dataclasses import dataclass
 from typing import AsyncIterator
 
@@ -25,8 +25,8 @@ _PORT_RANGE = 900
 
 
 def _pick_port(app_slug: str) -> int:
-    """Deterministic port from slug — no dynamic scanning needed for Phase 1."""
-    return _PORT_BASE + (hash(app_slug) % _PORT_RANGE)
+    """Deterministic port from slug. Uses MD5 so the result is stable across process restarts."""
+    return _PORT_BASE + (int(hashlib.md5(app_slug.encode()).hexdigest(), 16) % _PORT_RANGE)
 
 
 def _make_tar(files: list[GeneratedFile]) -> io.BytesIO:
@@ -151,13 +151,16 @@ async def build_and_deploy(
         yield _sse("error", message=f"Failed to start container: {exc}")
         return
 
-    # Brief wait to see if it immediately crashes
-    await asyncio.sleep(2)
-    container.reload()
-    if container.status not in ("running", "created"):
-        logs = container.logs(tail=20).decode("utf-8", errors="replace")
-        yield _sse("error", message=f"Container exited immediately. Logs:\n{logs}")
-        return
+    # Poll until running or give up after 10 s
+    for _ in range(20):
+        await asyncio.sleep(0.5)
+        container.reload()
+        if container.status == "running":
+            break
+        if container.status not in ("created", "restarting"):
+            logs = container.logs(tail=20).decode("utf-8", errors="replace")
+            yield _sse("error", message=f"Container exited immediately. Logs:\n{logs}")
+            return
 
     url = f"http://localhost:{port}"
     yield _sse("log", text=f"✓ Running at {url}\n")

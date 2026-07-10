@@ -4,7 +4,8 @@ const BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
 
 export type StreamEvent =
   | { type: 'text'; text: string }
-  | { type: 'done'; turn_id: string; input_tokens: number; output_tokens: number }
+  | { type: 'done'; turn_id: string; input_tokens: number; output_tokens: number; commit_sha: string | null; files_saved: number }
+  | { type: 'files_committed'; app_id: string | null; app_slug: string; commit_sha: string; file_count: number }
   | { type: 'error'; message: string };
 
 /**
