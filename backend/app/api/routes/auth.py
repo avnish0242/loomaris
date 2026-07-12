@@ -73,7 +73,7 @@ def _redirect_after_login(access_token: str, destination: str) -> RedirectRespon
     base = "http://localhost:3000" if settings.is_dev else settings.FRONTEND_URL
     url = f"{base}/#token={access_token}&next={destination}"
     if not settings.is_dev:
-        url = f"{settings.FRONTEND_URL}/auth/callback?access_token={access_token}&next={destination}"
+        url = f"{settings.FRONTEND_URL}/auth/callback?token={access_token}&next={destination}"
     resp = RedirectResponse(url=url)
     if not settings.is_dev:
         resp.set_cookie(
