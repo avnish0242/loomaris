@@ -224,6 +224,31 @@ export const deleteCloudAccount = (id: string) =>
 export const verifyCloudAccount = (id: string) =>
   request<CloudAccount>(`/api/v1/cloud/accounts/${id}/verify`, { method: 'POST' });
 
+export interface CloudDeployResponse {
+  deployment_id: string;
+  task_id: string;
+  status: string;
+}
+
+export interface CloudDeployStatusResponse {
+  status: string;
+  outputs: { alb_url?: string; cdn_url?: string; api_url?: string } | null;
+}
+
+export const cloudDeploy = (appId: string, body: {
+  cloud_account_id: string;
+  environment?: string;
+  confirm_cost?: boolean;
+}) => request<CloudDeployResponse>(`/api/v1/apps/${appId}/cloud-deploy`, {
+  method: 'POST',
+  body: JSON.stringify({ environment: 'preview', confirm_cost: true, ...body }),
+});
+
+export const getDeploymentStatus = (appId: string, deploymentId: string) =>
+  request<CloudDeployStatusResponse>(
+    `/api/v1/apps/${appId}/cloud-deploy/${deploymentId}/status`
+  );
+
 export const destroyCloudDeploy = (appId: string, deploymentId: string) =>
   request<{ deployment_id: string; task_id: string; status: string }>(
     `/api/v1/apps/${appId}/cloud-deploy/${deploymentId}`, { method: 'DELETE' }

@@ -4,9 +4,12 @@ import { useState, useEffect, useRef } from 'react';
 import {
   Rocket, Loader2, CheckCircle2, XCircle, ExternalLink,
   DollarSign, ChevronDown, ChevronUp, Activity, Cloud,
-  RefreshCw,
+  RefreshCw, Play, Square, Timer,
 } from 'lucide-react';
-import { getDeployStatus, type DeployStatus } from '@/lib/api';
+import {
+  getDeployStatus, type DeployStatus,
+  startSimulation, getSimulationStatus, stopSimulation, type SimulationSession,
+} from '@/lib/api';
 import { authHeaders } from '@/lib/auth';
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
@@ -59,6 +62,10 @@ export default function DeployPanel({ appId, hasFiles }: Props) {
   const [costLoading, setCostLoading] = useState(false);
   const [cloudDeployId, setCloudDeployId] = useState<string | null>(null);
   const [cloudStatus, setCloudStatus] = useState<string | null>(null);
+  const [simSession, setSimSession] = useState<SimulationSession | null>(null);
+  const [simLoading, setSimLoading] = useState(false);
+  const [simError, setSimError] = useState<string | null>(null);
+  const [simSecondsLeft, setSimSecondsLeft] = useState<number | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -123,6 +130,54 @@ export default function DeployPanel({ appId, hasFiles }: Props) {
     } catch { /* ignore */ } finally {
       setCostLoading(false);
     }
+  };
+
+  // Countdown timer for simulation TTL
+  useEffect(() => {
+    if (!simSession?.expires_at || simSession.status !== 'running') {
+      setSimSecondsLeft(null);
+      return;
+    }
+    const update = () => {
+      const diff = Math.max(0, Math.floor((new Date(simSession.expires_at!).getTime() - Date.now()) / 1000));
+      setSimSecondsLeft(diff);
+    };
+    update();
+    const interval = setInterval(update, 1000);
+    return () => clearInterval(interval);
+  }, [simSession?.expires_at, simSession?.status]);
+
+  // Poll simulation status while building/starting
+  useEffect(() => {
+    if (!simSession || ['running', 'expired', 'failed', 'stopped'].includes(simSession.status)) return;
+    const timer = setInterval(async () => {
+      try {
+        const updated = await getSimulationStatus(appId);
+        setSimSession(updated);
+      } catch { /* keep polling */ }
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [simSession?.status, appId]);
+
+  const launchSimulation = async () => {
+    setSimLoading(true);
+    setSimError(null);
+    try {
+      const session = await startSimulation(appId);
+      setSimSession(session);
+    } catch (e) {
+      setSimError(e instanceof Error ? e.message : 'Failed to start simulation');
+    } finally {
+      setSimLoading(false);
+    }
+  };
+
+  const terminateSimulation = async () => {
+    try {
+      await stopSimulation(appId);
+      setSimSession(null);
+      setSimSecondsLeft(null);
+    } catch { /* ignore */ }
   };
 
   const deployLocal = async () => {
@@ -370,6 +425,64 @@ export default function DeployPanel({ appId, hasFiles }: Props) {
           {error}
         </div>
       )}
+
+      {/* Preview Live / Simulation */}
+      <div className="border-t pt-3" style={{ borderColor: 'var(--border)' }}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Play className="w-3.5 h-3.5 text-cyan-400" />
+            <span className="text-xs font-medium text-slate-300">Preview Live</span>
+            {simSession?.status === 'running' && simSecondsLeft !== null && (
+              <span className="flex items-center gap-1 text-[11px] text-slate-500 font-mono">
+                <Timer className="w-3 h-3" />
+                {Math.floor(simSecondsLeft / 60)}:{String(simSecondsLeft % 60).padStart(2, '0')}
+              </span>
+            )}
+            {simSession && !['running', 'expired', 'failed', 'stopped'].includes(simSession.status) && (
+              <span className="text-[11px] text-cyan-400 font-mono animate-pulse">{simSession.status}…</span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            {simSession?.status === 'running' && simSession.url && (
+              <a href={simSession.url} target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-1 text-xs text-cyan-400 hover:text-cyan-300 transition-colors px-2 py-1 rounded-lg border"
+                style={{ borderColor: 'rgba(34,211,238,0.25)', background: 'rgba(34,211,238,0.08)' }}>
+                <ExternalLink className="w-3 h-3" /> Open
+              </a>
+            )}
+            {simSession?.status === 'running' ? (
+              <button onClick={terminateSimulation}
+                className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl transition-all"
+                style={{ background: 'rgba(244,63,94,0.15)', border: '1px solid rgba(244,63,94,0.3)', color: '#fb7185' }}>
+                <Square className="w-3 h-3" /> Stop
+              </button>
+            ) : (
+              <button onClick={launchSimulation}
+                disabled={!hasFiles || simLoading || (simSession?.status === 'building')}
+                className="flex items-center gap-1.5 text-xs font-medium px-3.5 py-1.5 rounded-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                style={{ background: 'rgba(34,211,238,0.1)', border: '1px solid rgba(34,211,238,0.25)', color: '#22d3ee' }}>
+                {simLoading || simSession?.status === 'building'
+                  ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Building…</>
+                  : <><Play className="w-3.5 h-3.5" />Preview Live</>
+                }
+              </button>
+            )}
+          </div>
+        </div>
+
+        {simError && (
+          <div className="flex items-center gap-1.5 mt-2 text-xs text-rose-400">
+            <XCircle className="w-3.5 h-3.5 shrink-0" />
+            {simError}
+          </div>
+        )}
+        {(simSession?.status === 'expired' || simSession?.status === 'failed') && (
+          <p className="mt-1.5 text-[11px] text-slate-500">
+            Session {simSession.status}. Launch a new one to preview again.
+          </p>
+        )}
+      </div>
 
       {!hasFiles && (
         <p className="text-xs text-slate-600 text-center py-1">

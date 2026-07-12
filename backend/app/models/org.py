@@ -62,6 +62,7 @@ class ChatTurn(Base):
     content = Column(Text, nullable=False)
     git_commit_sha = Column(String(40), nullable=True)
     token_count = Column(Integer, nullable=True)
+    scan_result = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     session = relationship("ChatSession", back_populates="turns")
