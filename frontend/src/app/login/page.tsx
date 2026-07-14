@@ -57,6 +57,18 @@ export default function LoginPage() {
             Continue with GitHub
           </a>
 
+          {/* Zoho */}
+          <a href={`${apiUrl}/api/v1/auth/zoho`}
+            className="flex items-center justify-center gap-3 w-full px-4 py-3 rounded-xl
+              text-white text-sm font-semibold hover:opacity-90
+              transition-all hover:scale-[1.02] active:scale-[0.98]"
+            style={{ background: '#E42527', boxShadow: '0 4px 20px rgba(228,37,39,0.35)' }}>
+            <svg className="w-5 h-5 shrink-0 fill-white" viewBox="0 0 64 64">
+              <path d="M32 4C16.536 4 4 16.536 4 32s12.536 28 28 28 28-12.536 28-28S47.464 4 32 4zm0 8c2.21 0 4 1.79 4 4s-1.79 4-4 4-4-1.79-4-4 1.79-4 4-4zM18 44l10-20h-8l-2 4h-4l6-12h24l-6 12h-4l2-4H26L16 44H18zm28 0H22l2-4h20l-2 4z"/>
+            </svg>
+            Continue with Zoho
+          </a>
+
           <div className="mt-4 pt-4 border-t border-white/[0.06]">
             <div className="space-y-2.5">
               {[

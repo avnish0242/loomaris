@@ -55,6 +55,9 @@ dev-build: check-docker
 reload-backend: check-docker
 	$(DOCKER_COMPOSE) -f docker-compose.dev.yml up -d --force-recreate backend
 
+reload-frontend: check-docker
+	$(DOCKER_COMPOSE) -f docker-compose.dev.yml up -d --force-recreate frontend
+
 down: check-docker
 	$(DOCKER_COMPOSE) -f docker-compose.dev.yml down
 

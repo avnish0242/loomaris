@@ -5,7 +5,8 @@ import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import { createSession, listSessions, listCloudAccounts, getMe, type Session, type CloudAccount, type Me } from '@/lib/api';
 import { clearToken } from '@/lib/auth';
-import { Plus, MessageSquare, LogOut, Home, Sparkles, Cloud, ChevronUp, Shield, Building2, Key } from 'lucide-react';
+import { Plus, MessageSquare, LogOut, Home, Sparkles, Cloud, ChevronUp, Shield, Building2, Key, Settings2 } from 'lucide-react';
+import { listJoinRequests } from '@/lib/api';
 
 function timeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -27,6 +28,7 @@ export default function Sidebar({ onOpenCloudConnect }: Props) {
   const [cloudAccount, setCloudAccount] = useState<CloudAccount | null | undefined>(undefined);
   const [me, setMe] = useState<Me | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [pendingCount, setPendingCount] = useState(0);
   const profileRef = useRef<HTMLDivElement>(null);
   const params = useParams();
   const router = useRouter();
@@ -37,7 +39,14 @@ export default function Sidebar({ onOpenCloudConnect }: Props) {
     listCloudAccounts()
       .then((accounts) => setCloudAccount(accounts.find((a) => a.status === 'verified') ?? null))
       .catch(() => setCloudAccount(null));
-    getMe().then(setMe).catch(() => {});
+    getMe().then((data) => {
+      setMe(data);
+      if ((data.role === 'owner' || data.role === 'admin') && data.org) {
+        listJoinRequests(data.org.id)
+          .then((reqs) => setPendingCount(reqs.length))
+          .catch(() => {});
+      }
+    }).catch(() => {});
   }, []);
 
   // Close popover on outside click
@@ -86,12 +95,37 @@ export default function Sidebar({ onOpenCloudConnect }: Props) {
 
       {/* Actions */}
       <div className="px-3 py-3 space-y-1 border-b" style={{ borderColor: 'var(--border)' }}>
+        {me?.user.is_superadmin && (
+          <Link href="/admin"
+            className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs
+              text-indigo-300 hover:text-white hover:bg-indigo-500/10
+              border border-indigo-500/20 hover:border-indigo-500/35 transition-all group">
+            <Shield className="w-3.5 h-3.5" />
+            Admin panel
+          </Link>
+        )}
+
         <Link href="/chat"
           className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs text-slate-400
             hover:text-slate-200 hover:bg-white/[0.04] transition-all group">
           <Home className="w-3.5 h-3.5 group-hover:text-indigo-400 transition-colors" />
           Home
         </Link>
+
+        {(me?.role === 'owner' || me?.role === 'admin') && (
+          <Link href="/org-settings"
+            className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs text-slate-400
+              hover:text-slate-200 hover:bg-white/[0.04] transition-all group">
+            <Settings2 className="w-3.5 h-3.5 group-hover:text-indigo-400 transition-colors" />
+            Org Settings
+            {pendingCount > 0 && (
+              <span className="ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded-full
+                bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                {pendingCount}
+              </span>
+            )}
+          </Link>
+        )}
 
         <button onClick={handleNew} disabled={creating}
           className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs
@@ -217,18 +251,9 @@ export default function Sidebar({ onOpenCloudConnect }: Props) {
 
             {/* Actions */}
             <div className="py-1">
-              {me.user.is_superadmin && (
-                <button
-                  onClick={() => { setProfileOpen(false); router.push('/admin'); }}
-                  className="w-full flex items-center gap-2.5 px-4 py-2 text-xs text-slate-400
-                    hover:text-white hover:bg-white/[0.04] transition-all">
-                  <Shield className="w-3.5 h-3.5 text-indigo-400" />
-                  Admin panel
-                </button>
-              )}
               {(me.role === 'owner' || me.role === 'admin' || me.user.is_superadmin) && (
                 <button
-                  onClick={() => { setProfileOpen(false); onOpenCloudConnect?.(); }}
+                  onClick={() => { setProfileOpen(false); router.push('/org-settings?tab=integrations'); }}
                   className="w-full flex items-center gap-2.5 px-4 py-2 text-xs text-slate-400
                     hover:text-white hover:bg-white/[0.04] transition-all">
                   <Key className="w-3.5 h-3.5 text-slate-500" />

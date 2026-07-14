@@ -52,6 +52,8 @@ class User(Base):
     google_sub: Mapped[str | None] = mapped_column(String(255), unique=True)
     # Added by migration 004
     github_sub: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
+    # Added by migration 008
+    zoho_sub: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
     is_superadmin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     google_refresh_token_enc: Mapped[str | None] = mapped_column(Text)
     # anthropic_api_key_enc was dropped from users by migration 004 (moved to organizations)

@@ -193,6 +193,14 @@ export const listMembers = (org_id: string) =>
 export const removeMember = (org_id: string, user_id: string) =>
   request<{ ok: boolean }>(`/api/v1/orgs/${org_id}/members/${user_id}`, { method: 'DELETE' });
 
+export const updateOrg = (org_id: string, body: { name?: string; description?: string; join_policy?: string }) =>
+  request<{ id: string; name: string; slug: string; description: string | null; join_policy: string }>(
+    `/api/v1/orgs/${org_id}`, { method: 'PATCH', body: JSON.stringify(body) }
+  );
+
+export const getClaudeKeyStatus = () =>
+  request<{ configured: boolean; source: string }>('/api/v1/auth/claude-key/status');
+
 // ─── Admin ────────────────────────────────────────────────────────────────────
 
 export const adminListOrgs = () => request<any[]>('/api/v1/admin/orgs');

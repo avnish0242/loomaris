@@ -39,6 +39,12 @@ class InviteRequest(BaseModel):
     role: str = "member"
 
 
+class OrgUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    join_policy: str | None = None
+
+
 class ApproveRequest(BaseModel):
     user_id: uuid.UUID
 
@@ -218,6 +224,40 @@ async def accept_org_invite(
         "org_id": str(membership.org_id),
         "role": membership.role,
         "redirect": "/chat",
+    }
+
+
+@router.patch("/{org_id}", summary="Update org profile (org admin)")
+async def update_org(
+    org_id: uuid.UUID,
+    body: OrgUpdateRequest,
+    admin: tuple[User, Organization] = Depends(require_org_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import select as sa_select
+    _, org = admin
+    if str(org.id) != str(org_id):
+        raise HTTPException(status_code=403, detail="Access denied.")
+    result = await db.execute(sa_select(Organization).where(Organization.id == org_id))
+    org = result.scalar_one_or_none()
+    if not org:
+        raise HTTPException(status_code=404, detail="Org not found.")
+    if body.name is not None:
+        org.name = body.name
+    if body.description is not None:
+        org.description = body.description
+    if body.join_policy is not None:
+        if body.join_policy not in ("open", "approval_required", "invite_only"):
+            raise HTTPException(status_code=422, detail="Invalid join_policy.")
+        org.join_policy = body.join_policy
+    await db.commit()
+    await db.refresh(org)
+    return {
+        "id": str(org.id),
+        "name": org.name,
+        "slug": org.slug,
+        "description": org.description,
+        "join_policy": org.join_policy,
     }
 
 

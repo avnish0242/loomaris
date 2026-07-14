@@ -49,6 +49,17 @@ oauth.register(
     client_kwargs={"scope": "read:user user:email"},
 )
 
+oauth.register(
+    name="zoho",
+    client_id=settings.ZOHO_CLIENT_ID,
+    client_secret=settings.ZOHO_CLIENT_SECRET,
+    server_metadata_url="https://accounts.zoho.com/.well-known/openid-configuration",
+    client_kwargs={
+        "scope": "openid email profile",
+        "token_endpoint_auth_method": "client_secret_post",
+    },
+)
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -100,7 +111,7 @@ async def _finish_oauth(db: AsyncSession, user: User) -> RedirectResponse:
         },
     )
 
-    if user.is_superadmin and not org:
+    if user.is_superadmin:
         destination = "/admin"
     elif not org:
         pending = await get_pending_membership(db, user.id)
@@ -188,6 +199,77 @@ async def github_callback(request: Request, db: AsyncSession = Depends(get_db)):
         email=email,
         name=profile.get("name") or profile.get("login"),
         picture=profile.get("avatar_url"),
+    )
+    return await _finish_oauth(db, user)
+
+
+# ── Zoho OAuth ───────────────────────────────────────────────────────────────
+
+@router.get("/zoho", summary="Initiate Zoho OAuth login")
+async def zoho_login(request: Request):
+    if not settings.ZOHO_CLIENT_ID or not settings.ZOHO_CLIENT_SECRET:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Zoho OAuth is not configured. Add ZOHO_CLIENT_ID and ZOHO_CLIENT_SECRET.",
+        )
+    return await oauth.zoho.authorize_redirect(request, settings.ZOHO_REDIRECT_URI)
+
+
+@router.get("/zoho/callback", summary="Zoho OAuth callback")
+async def zoho_callback(request: Request, db: AsyncSession = Depends(get_db)):
+    import httpx
+
+    error = request.query_params.get("error")
+    if error:
+        raise HTTPException(status_code=400, detail=f"Zoho OAuth error: {error}")
+
+    code = request.query_params.get("code")
+    if not code:
+        raise HTTPException(status_code=400, detail="No authorization code received from Zoho")
+
+    # Zoho returns the regional server in the callback — must use it for token exchange
+    # e.g. accounts.zoho.in (India), accounts.zoho.eu (EU), accounts.zoho.com (US)
+    accounts_server = request.query_params.get("accounts-server", "https://accounts.zoho.com")
+
+    async with httpx.AsyncClient() as client:
+        token_resp = await client.post(
+            f"{accounts_server}/oauth/v2/token",
+            data={
+                "grant_type": "authorization_code",
+                "client_id": settings.ZOHO_CLIENT_ID,
+                "client_secret": settings.ZOHO_CLIENT_SECRET,
+                "redirect_uri": settings.ZOHO_REDIRECT_URI,
+                "code": code,
+            },
+        )
+
+    token_data = token_resp.json()
+    if token_resp.status_code != 200 or "error" in token_data:
+        log.error("Zoho token exchange failed: %s", token_data)
+        raise HTTPException(status_code=400, detail=f"Zoho OAuth error: {token_data.get('error', 'token_exchange_failed')}")
+
+    access_token = token_data.get("access_token")
+
+    async with httpx.AsyncClient() as client:
+        info_resp = await client.get(
+            f"{accounts_server}/oauth/v2/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+    if info_resp.status_code != 200:
+        raise HTTPException(status_code=400, detail="Could not retrieve user info from Zoho")
+
+    user_info = info_resp.json()
+    email = user_info.get("email")
+    if not email:
+        raise HTTPException(status_code=400, detail="Zoho did not return an email address.")
+
+    user = await get_or_create_user(
+        db,
+        zoho_sub=str(user_info["sub"]),
+        email=email,
+        name=user_info.get("name"),
+        picture=user_info.get("picture"),
     )
     return await _finish_oauth(db, user)
 

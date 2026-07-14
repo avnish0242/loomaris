@@ -18,6 +18,7 @@ async def get_or_create_user(
     picture: str | None,
     google_sub: str | None = None,
     github_sub: str | None = None,
+    zoho_sub: str | None = None,
     google_refresh_token: str | None = None,
 ) -> User:
     # Prefer matching on OAuth subject, fall back to email
@@ -28,11 +29,12 @@ async def get_or_create_user(
     if not user and github_sub:
         result = await db.execute(select(User).where(User.github_sub == github_sub))
         user = result.scalar_one_or_none()
+    if not user and zoho_sub:
+        result = await db.execute(select(User).where(User.zoho_sub == zoho_sub))
+        user = result.scalar_one_or_none()
     if not user:
         result = await db.execute(select(User).where(User.email == email))
         user = result.scalar_one_or_none()
-
-    is_superadmin = email.lower() == settings.SUPERADMIN_EMAIL.lower()
 
     if user:
         user.name = name or user.name
@@ -41,10 +43,12 @@ async def get_or_create_user(
             user.google_sub = google_sub
         if github_sub:
             user.github_sub = github_sub
+        if zoho_sub:
+            user.zoho_sub = zoho_sub
         if google_refresh_token:
             user.google_refresh_token_enc = encrypt_value(google_refresh_token)
         user.last_login_at = datetime.now(timezone.utc)
-        user.is_superadmin = is_superadmin
+        # is_superadmin is a DB-level role — never overwritten at login
     else:
         user = User(
             email=email,
@@ -52,7 +56,8 @@ async def get_or_create_user(
             picture=picture,
             google_sub=google_sub,
             github_sub=github_sub,
-            is_superadmin=is_superadmin,
+            zoho_sub=zoho_sub,
+            is_superadmin=False,
             last_login_at=datetime.now(timezone.utc),
             google_refresh_token_enc=(
                 encrypt_value(google_refresh_token) if google_refresh_token else None

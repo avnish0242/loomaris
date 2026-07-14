@@ -40,6 +40,52 @@ variable "google_client_secret" {
   sensitive   = true
 }
 
+variable "github_client_id" {
+  description = "GitHub OAuth App client ID"
+  type        = string
+  sensitive   = true
+}
+
+variable "github_client_secret" {
+  description = "GitHub OAuth App client secret"
+  type        = string
+  sensitive   = true
+}
+
+variable "zoho_client_id" {
+  description = "Zoho OAuth client ID"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "zoho_client_secret" {
+  description = "Zoho OAuth client secret"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "loomaris_aws_account_id" {
+  description = "AWS account ID of the Loomaris control-plane account (12-digit number, used in trust policy ARN)"
+  type        = string
+  default     = ""
+}
+
+variable "loomaris_deployer_access_key" {
+  description = "Access key for the loomaris-deployer IAM user (used for cross-account STS assume-role)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "loomaris_deployer_secret_key" {
+  description = "Secret key for the loomaris-deployer IAM user"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "anthropic_api_key" {
   description = "Anthropic Claude API key (sk-ant-...)"
   type        = string

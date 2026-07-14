@@ -22,8 +22,6 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
 
-    # Super admin email (matched at login time to set is_superadmin flag)
-    SUPERADMIN_EMAIL: str = "avnish.kumar@loomaris.xyz"
 
     # Google OAuth
     GOOGLE_CLIENT_ID: str = ""
@@ -34,6 +32,11 @@ class Settings(BaseSettings):
     GITHUB_CLIENT_ID: str = ""
     GITHUB_CLIENT_SECRET: str = ""
     GITHUB_REDIRECT_URI: str = "http://localhost:8000/api/v1/auth/github/callback"
+
+    # Zoho OAuth
+    ZOHO_CLIENT_ID: str = ""
+    ZOHO_CLIENT_SECRET: str = ""
+    ZOHO_REDIRECT_URI: str = "http://localhost:8000/api/v1/auth/zoho/callback"
 
     # JWT
     JWT_SECRET_KEY: str = "change-me-in-production"
