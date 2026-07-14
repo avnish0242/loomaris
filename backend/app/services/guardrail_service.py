@@ -6,7 +6,7 @@ Combined decision: ALLOW / BLOCK / REVIEW
 """
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 from anthropic import AsyncAnthropic

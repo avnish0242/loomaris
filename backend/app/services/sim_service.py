@@ -8,7 +8,6 @@ All AWS calls happen in executors to avoid blocking the event loop.
 import asyncio
 import base64
 import hashlib
-import io
 import logging
 import time
 from datetime import datetime, timedelta, timezone

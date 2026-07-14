@@ -20,7 +20,6 @@ log = logging.getLogger(__name__)
 
 def _update_deployment_sync(deployment_id: str, org_slug: str, **kwargs) -> None:
     """Synchronously update deployment record via a fresh sync DB connection."""
-    import asyncio
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session
     from app.core.config import settings
@@ -61,11 +60,8 @@ def cloud_deploy_task(
     org_slug: str,
 ) -> dict:
     """Execute a full cloud deployment via Pulumi."""
-    import asyncio
     from datetime import datetime, timezone
 
-    from app.core.config import settings
-    from app.core.security import decrypt_value
     from app.services.git_service import get_current_files
     from app.services.iac.detector import detect_app_type
     from app.services.iac.generator import generate_pulumi_program
@@ -139,7 +135,6 @@ def cloud_deploy_task(
                                 outputs={"error": apply_result.error})
         return {"success": False, "error": apply_result.error}
 
-    from datetime import datetime, timezone
     _update_deployment_sync(
         deployment_id, org_slug,
         status="success",
@@ -256,7 +251,6 @@ def _get_org_plan(org_slug: str) -> str:
         from sqlalchemy import create_engine, text
         from sqlalchemy.orm import Session
         from app.core.config import settings
-        from app.models.platform import Organization
 
         sync_url = settings.DATABASE_URL.replace("+asyncpg", "")
         engine = create_engine(sync_url)

@@ -3,7 +3,7 @@ Traffic-tier cost projector.
 Applies usage multipliers to a base resource config to produce
 4-tier cost estimates: baseline, 1k users, 10k users, 100k users.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 
 

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import AsyncIterator
 
 import docker
-from docker.errors import BuildError, DockerException
+from docker.errors import DockerException
 
 from app.services.git_service import GeneratedFile
 
@@ -124,13 +124,13 @@ async def build_and_deploy(
         yield _sse("error", message=f"Build failed: {build_error[-1]}")
         return
 
-    yield _sse("log", text=f"✓ Image built\n")
+    yield _sse("log", text="✓ Image built\n")
 
     # --- Stop any existing container for this app ---
     container_name = f"loomaris-preview-{app_slug}"
     try:
         old = client.containers.get(container_name)
-        yield _sse("log", text=f"⏹ Stopping previous container…\n")
+        yield _sse("log", text="⏹ Stopping previous container…\n")
         old.stop(timeout=5)
         old.remove()
     except docker.errors.NotFound:

@@ -4,7 +4,7 @@ import sys
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import pool, text
+from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # Ensure the backend root is on sys.path when running alembic from inside the container

@@ -31,9 +31,7 @@ def run_cost_estimate(
     from sqlalchemy.orm import Session
 
     from app.core.config import settings
-    from app.core.security import decrypt_value
     from app.models.org import App, CostEstimate
-    from app.models.platform import Organization
     from app.services.git_service import get_current_files
     from app.services.iac.detector import detect_app_type
     from app.services.cost_engine.aggregator import estimate_costs
@@ -58,7 +56,7 @@ def run_cost_estimate(
                     text("SELECT plan, cost_hard_cap FROM platform.organizations WHERE slug = :slug"),
                     {"slug": org_slug},
                 ).fetchone()
-                org_plan = org[0] if org else "pro"
+                _org_plan = org[0] if org else "pro"
                 hard_cap = Decimal(str(org[1])) if org else Decimal("500")
 
         # ── Load files + detect app type ──────────────────────────────────────

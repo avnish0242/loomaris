@@ -15,7 +15,7 @@ from sqlalchemy import select
 
 from app.database import AsyncSessionLocal
 from app.models.platform import CloudAccount, OrgMembership, Organization, User
-from app.services.tenant_service import add_user_to_org, create_org_schema
+from app.services.tenant_service import create_org_schema
 
 ORG_ADMIN_EMAIL = "avnish.dbg@gmail.com"
 
@@ -125,8 +125,8 @@ async def seed() -> None:
         print()
         print("━" * 52)
         print("  Tenant ready. Summary:")
-        print(f"    Org:       Loomaris Labs  (slug: loomaris-labs)")
-        print(f"    Schema:    org_loomaris_labs")
+        print("    Org:       Loomaris Labs  (slug: loomaris-labs)")
+        print("    Schema:    org_loomaris_labs")
         print(f"    Org admin: {ORG_ADMIN_EMAIL}")
         print()
         print("  Login:")

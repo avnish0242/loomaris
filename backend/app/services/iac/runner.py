@@ -166,7 +166,7 @@ def pulumi_up(program: str, aws_creds: dict, stack_name: str) -> ApplyResult:
     # Extract outputs from stdout JSON
     outputs: dict = {}
     try:
-        lines = [l for l in stdout.splitlines() if l.strip().startswith("{")]
+        lines = [ln for ln in stdout.splitlines() if ln.strip().startswith("{")]
         for line in lines:
             data = json.loads(line)
             if "outputs" in data:

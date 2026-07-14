@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timezone
 
 import boto3
-from botocore.exceptions import ClientError, NoCredentialsError
+from botocore.exceptions import ClientError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -192,7 +192,7 @@ async def connect_azure_account(
     subscription_id: str,
 ) -> CloudAccount:
     """Validate Azure service principal via MSAL, then store credentials."""
-    identity = await _validate_azure_credentials(tenant_id, client_id, client_secret, subscription_id)
+    await _validate_azure_credentials(tenant_id, client_id, client_secret, subscription_id)
 
     tenant_id_enc = encrypt_value(tenant_id)
     client_id_enc = encrypt_value(client_id)

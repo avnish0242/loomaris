@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.security import decrypt_value, encrypt_value
 from app.models.platform import OrgMembership, Organization, User
-from app.services.tenant_service import add_user_to_org, get_or_create_default_org
 
 
 async def get_or_create_user(

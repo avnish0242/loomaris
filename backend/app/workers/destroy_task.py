@@ -5,7 +5,6 @@ Requires a persistent Pulumi state backend (PULUMI_STATE_BUCKET) — without it
 the state is not found and destroy will silently no-op.
 """
 import logging
-import uuid
 
 from app.workers.celery_app import celery_app
 from app.workers.deploy_task import _get_aws_creds, _update_deployment_sync

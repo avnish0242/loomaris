@@ -5,10 +5,8 @@ All pricing is cached in Redis for 24h (prices change rarely).
 import json
 import logging
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Any
 
 import boto3
-from botocore.exceptions import ClientError
 
 log = logging.getLogger(__name__)
 

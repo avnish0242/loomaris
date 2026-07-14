@@ -6,7 +6,7 @@ Each function returns a complete, runnable Pulumi program as a string.
 
 def static_site_program(app_slug: str, aws_region: str, static_files: list[tuple[str, str]]) -> str:
     """S3 + CloudFront static site. files is list of (path, content) tuples."""
-    files_code = "\n    ".join(
+    _files_code = "\n    ".join(
         f'aws.s3.BucketObject("{p.replace("/", "-")}", bucket=bucket.id, '
         f'key="{p}", content=open("/app/static/{p}").read() if False else {repr(c[:200]+"...")}, '
         f'content_type=_mime("{p}")),'

@@ -14,7 +14,6 @@ from app.core.security import create_access_token
 from app.database import get_db
 from app.models.platform import CloudAccount, OrgMembership, Organization, User
 from app.services.auth_service import (
-    get_active_membership,
     get_anthropic_key,
     get_or_create_user,
     get_pending_membership,
