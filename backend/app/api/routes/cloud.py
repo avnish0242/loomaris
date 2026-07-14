@@ -87,7 +87,9 @@ async def get_setup_info(
     sts_external_id = hashlib.sha256(str(org_id).encode()).hexdigest()[:32]
 
     loomaris_acct = settings.LOOMARIS_AWS_ACCOUNT_ID or "<LOOMARIS_AWS_ACCOUNT_ID>"
-    deployer_arn = f"arn:aws:iam::{loomaris_acct}:user/loomaris-deployer"
+    # The ECS task role is the actual runtime principal — no long-lived keys needed.
+    # Users' trust policies must trust this role ARN (not an IAM user).
+    deployer_arn = f"arn:aws:iam::{loomaris_acct}:role/loomaris-ecs-task-role"
 
     return {
         "loomaris_deployer_arn": deployer_arn,
