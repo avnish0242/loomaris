@@ -177,7 +177,30 @@ resource "aws_iam_role_policy" "github_actions" {
         Resource = "*"
       },
       {
-        # Required so GitHub Actions can register task definitions that reference ECS roles
+        # Required to launch the one-off "alembic upgrade head" migration task
+        Sid    = "ECSRunMigrationTask"
+        Effect = "Allow"
+        Action = ["ecs:RunTask"]
+        Resource = [
+          "arn:aws:ecs:${local.region}:${local.account_id}:task-definition/${local.name}-backend:*"
+        ]
+        Condition = {
+          ArnEquals = { "ecs:cluster" = "arn:aws:ecs:${local.region}:${local.account_id}:cluster/${local.name}" }
+        }
+      },
+      {
+        # Required to resolve subnets/security group for the migration task's network config
+        Sid    = "NetworkLookupForMigrationTask"
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeSubnets",
+          "ec2:DescribeSecurityGroups"
+        ]
+        Resource = "*"
+      },
+      {
+        # Required so GitHub Actions can register task definitions that reference ECS roles,
+        # and pass them when launching the migration task
         Sid      = "PassECSRoles"
         Effect   = "Allow"
         Action   = ["iam:PassRole"]
