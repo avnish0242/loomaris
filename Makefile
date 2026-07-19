@@ -2,7 +2,7 @@ SHELL := /bin/bash
 .PHONY: dev dev-build down logs setup migrate migrate-down seed shell psql check-docker \
         prod prod-build prod-down prod-logs prod-shell prod-migrate prod-seed ssl-init ssl-renew \
         tf-bootstrap tf-init tf-plan tf-apply tf-destroy \
-        ecr-login ecr-push ecs-migrate ecs-seed ecs-status _ecs-run-task \
+        ecr-login ecr-push ecs-migrate ecs-seed ecs-seed-superadmin ecs-status _ecs-run-task \
         poetry-lock poetry-add poetry-update lint
 
 # Detect Docker — support Docker Desktop, OrbStack, Colima, and Rancher Desktop
@@ -261,6 +261,9 @@ ecs-migrate:
 
 ecs-seed:
 	@$(MAKE) _ecs-run-task TASK=backend CMD='["python","scripts/seed_tenant.py"]'
+
+ecs-seed-superadmin:
+	@$(MAKE) _ecs-run-task TASK=backend CMD='["python","scripts/seed_superadmin.py","$(EMAIL)"]'
 
 _ecs-run-task:
 	$(eval SUBNETS := $(shell aws ec2 describe-subnets \

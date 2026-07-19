@@ -113,6 +113,21 @@ async def make_superadmin(
     return {"ok": True, "email": user.email}
 
 
+@router.post("/users/{user_id}/revoke-superadmin", summary="Revoke superadmin from a user")
+async def revoke_superadmin(
+    user_id: uuid.UUID,
+    current_admin: User = Depends(require_superadmin),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    user.is_superadmin = False
+    await db.commit()
+    return {"ok": True, "email": user.email}
+
+
 @router.post("/orgs/{org_id}/members/{user_id}/promote", summary="Promote member to org admin")
 async def promote_to_admin(
     org_id: uuid.UUID,

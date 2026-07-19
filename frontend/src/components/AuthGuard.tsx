@@ -27,12 +27,10 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
 
     getMe()
       .then((me) => {
-        if (me.user.is_superadmin) {
-          router.replace('/admin');
-        } else if (me.membership_status === 'pending') {
+        if (me.membership_status === 'pending') {
           router.replace('/waiting');
         } else if (me.membership_status === 'none') {
-          router.replace('/onboarding');
+          router.replace(me.user.is_superadmin ? '/admin' : '/onboarding');
         } else {
           setReady(true);
         }
