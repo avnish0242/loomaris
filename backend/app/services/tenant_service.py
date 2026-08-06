@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS {schema}.chat_turns (
     content TEXT NOT NULL,
     git_commit_sha VARCHAR(40),
     token_count INTEGER,
+    scan_result JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
