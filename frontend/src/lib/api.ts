@@ -14,7 +14,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail ?? `Request failed: ${res.status}`);
+    // `detail` can be a plain string or a structured object (e.g. the 409 the
+    // simulation gate returns: {error, head_sha, message}) — prefer a readable
+    // message either way, but keep the raw detail around for callers that need
+    // to branch on it (status/detail are attached below, not just the message).
+    const message =
+      typeof err.detail === 'string'
+        ? err.detail
+        : err.detail?.message ?? `Request failed: ${res.status}`;
+    const apiError = new Error(message) as Error & { status?: number; detail?: unknown };
+    apiError.status = res.status;
+    apiError.detail = err.detail;
+    throw apiError;
   }
   return res.json() as Promise<T>;
 }
@@ -226,6 +237,26 @@ export const connectCloudRoleAccount = (body: {
   body: JSON.stringify({ provider: 'aws', ...body }),
 });
 
+export const connectAzureAccount = (body: {
+  display_name: string;
+  tenant_id: string;
+  client_id: string;
+  client_secret: string;
+  subscription_id: string;
+}) => request<CloudAccount>('/api/v1/cloud/accounts', {
+  method: 'POST',
+  body: JSON.stringify({ provider: 'azure', ...body }),
+});
+
+export const connectGcpAccount = (body: {
+  display_name: string;
+  project_id: string;
+  service_account_json: string;
+}) => request<CloudAccount>('/api/v1/cloud/accounts', {
+  method: 'POST',
+  body: JSON.stringify({ provider: 'gcp', ...body }),
+});
+
 export const deleteCloudAccount = (id: string) =>
   request<{ ok: boolean }>(`/api/v1/cloud/accounts/${id}`, { method: 'DELETE' });
 
@@ -247,15 +278,26 @@ export const cloudDeploy = (appId: string, body: {
   cloud_account_id: string;
   environment?: string;
   confirm_cost?: boolean;
+  deploy_without_preview?: boolean;
 }) => request<CloudDeployResponse>(`/api/v1/apps/${appId}/cloud-deploy`, {
   method: 'POST',
-  body: JSON.stringify({ environment: 'preview', confirm_cost: true, ...body }),
+  body: JSON.stringify({ environment: 'preview', confirm_cost: true, deploy_without_preview: false, ...body }),
 });
 
 export const getDeploymentStatus = (appId: string, deploymentId: string) =>
   request<CloudDeployStatusResponse>(
     `/api/v1/apps/${appId}/cloud-deploy/${deploymentId}/status`
   );
+
+export interface DeployGate {
+  passed: boolean;
+  head_sha: string | null;
+  active_simulation: { session_id: string; url: string | null } | null;
+  message: string;
+}
+
+export const getDeployGate = (appId: string) =>
+  request<DeployGate>(`/api/v1/apps/${appId}/deploy-gate`);
 
 export const destroyCloudDeploy = (appId: string, deploymentId: string) =>
   request<{ deployment_id: string; task_id: string; status: string }>(
@@ -296,6 +338,20 @@ export const runPreflight = (appId: string, cloudAccountId: string) =>
   request<PreflightResult>(`/api/v1/apps/${appId}/preflight`, {
     method: 'POST',
     body: JSON.stringify({ cloud_account_id: cloudAccountId }),
+  });
+
+// ─── GitHub export ──────────────────────────────────────────────────────────
+
+export const getGithubStatus = () =>
+  request<{ connected: boolean; account_login: string | null }>('/api/v1/github/status');
+
+export const startGithubInstall = (orgId: string) =>
+  request<{ install_url: string }>(`/api/v1/github/orgs/${orgId}/connect`, { method: 'POST' });
+
+export const exportToGithub = (appId: string, body: { repo_name: string; private?: boolean }) =>
+  request<{ repo_url: string }>(`/api/v1/github/apps/${appId}/export`, {
+    method: 'POST',
+    body: JSON.stringify({ private: true, ...body }),
   });
 
 export interface SimulationSession {

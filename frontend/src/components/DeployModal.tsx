@@ -1,32 +1,37 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { X, Check, Loader2, ExternalLink, Copy, ChevronLeft, Shield, AlertCircle, CheckCircle2, XCircle } from 'lucide-react';
+import { X, Check, Loader2, ExternalLink, Copy, ChevronLeft, Shield, AlertCircle, CheckCircle2, XCircle, Zap } from 'lucide-react';
 import {
   listCloudAccounts,
   CloudAccount,
   triggerCostEstimate,
   getLatestCostEstimate,
   CostEstimate,
-  getDeployStatus,
+  cloudDeploy,
+  getDeploymentStatus,
+  getDeployGate,
+  type DeployGate,
   runPreflight,
   type PreflightResult,
 } from '@/lib/api';
-import { authHeaders } from '@/lib/auth';
 import PermissionTemplateModal from './PermissionTemplateModal';
 
-type Step = 'account' | 'preflight' | 'cost' | 'deploying' | 'success';
+type Step = 'gate' | 'account' | 'preflight' | 'cost' | 'deploying' | 'success';
 
 interface Props {
   appId: string;
   open: boolean;
   onClose: () => void;
+  /** Opens the Simulate flow for this app — used by the gate step's "Run simulation" CTA. */
+  onSimulate?: () => void;
 }
 
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
-
-export default function DeployModal({ appId, open, onClose }: Props) {
-  const [step, setStep] = useState<Step>('account');
+export default function DeployModal({ appId, open, onClose, onSimulate }: Props) {
+  const [step, setStep] = useState<Step>('gate');
+  const [gate, setGate] = useState<DeployGate | null>(null);
+  const [gateChecking, setGateChecking] = useState(true);
+  const [deployWithoutPreview, setDeployWithoutPreview] = useState(false);
   const [accounts, setAccounts] = useState<CloudAccount[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
@@ -42,7 +47,9 @@ export default function DeployModal({ appId, open, onClose }: Props) {
 
   useEffect(() => {
     if (!open) return;
-    setStep('account');
+    setStep('gate');
+    setGate(null);
+    setDeployWithoutPreview(false);
     setSelectedAccountId(null);
     setPreflight(null);
     setCostEstimate(null);
@@ -52,7 +59,23 @@ export default function DeployModal({ appId, open, onClose }: Props) {
     listCloudAccounts()
       .then((accs) => setAccounts(accs.filter((a) => a.status === 'verified')))
       .catch(() => {});
-  }, [open]);
+
+    setGateChecking(true);
+    getDeployGate(appId)
+      .then((g) => {
+        setGate(g);
+        // The gate is invisible when it's satisfied — only surface the blocking
+        // screen when there isn't a running simulation of the current code.
+        setStep(g.passed ? 'account' : 'gate');
+      })
+      .catch(() => {
+        // Can't reach the gate check — fail open to the account step rather than
+        // stall the whole modal; the backend enforces the gate again at deploy
+        // time regardless, so this is a UX nicety, not the real protection.
+        setStep('account');
+      })
+      .finally(() => setGateChecking(false));
+  }, [open, appId]);
 
   const selectedAccount = accounts.find((a) => a.id === selectedAccountId) ?? null;
 
@@ -115,42 +138,43 @@ export default function DeployModal({ appId, open, onClose }: Props) {
     setDeployLogs([]);
     setDeployError(null);
     try {
-      const res = await fetch(`${BASE}/api/v1/apps/${appId}/cloud-deploy`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() as Record<string, string> },
-        body: JSON.stringify({ cloud_account_id: selectedAccountId, environment: 'production', confirm_cost: true }),
+      const depData = await cloudDeploy(appId, {
+        cloud_account_id: selectedAccountId,
+        environment: 'production',
+        confirm_cost: true,
+        deploy_without_preview: deployWithoutPreview,
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: res.statusText }));
-        setDeployError(err.detail ?? `HTTP ${res.status}`);
+      const deploymentId = depData.deployment_id;
+      const deadline = Date.now() + 300_000;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 3000));
+        try {
+          const status = await getDeploymentStatus(appId, deploymentId);
+          if (status.status === 'success') {
+            setLiveUrl(status.outputs?.alb_url ?? status.outputs?.cdn_url ?? status.outputs?.api_url ?? null);
+            setStep('success');
+            return;
+          }
+          if (status.status === 'failed') { setDeployError('Deployment failed. Check Celery logs.'); return; }
+          setDeployLogs((prev) => {
+            const msg = `Status: ${status.status}…`;
+            if (prev[prev.length - 1]?.text === msg) return prev;
+            return [...prev, { text: msg }];
+          });
+        } catch { /* keep polling */ }
+      }
+      setDeployError('Deployment timed out. Check your cloud console.');
+    } catch (e) {
+      const err = e as Error & { status?: number; detail?: { error?: string; message?: string } };
+      if (err.status === 409 && err.detail?.error === 'simulation_required') {
+        // Something changed between the gate check and clicking Deploy (e.g. the
+        // simulation expired mid-flow) — send the user back to the gate screen
+        // with the real reason instead of a generic failure.
+        setGate((g) => (g ? { ...g, passed: false, message: err.detail!.message ?? g.message } : g));
+        setStep('gate');
         return;
       }
-      const depData = await res.json();
-      const deploymentId = depData.deployment_id;
-      if (deploymentId) {
-        const deadline = Date.now() + 300_000;
-        while (Date.now() < deadline) {
-          await new Promise((r) => setTimeout(r, 3000));
-          try {
-            const status = await getDeployStatus(appId);
-            const dep = status.last_deployment;
-            if (dep?.status === 'success' || dep?.status === 'running') {
-              setLiveUrl((status as any).url ?? null);
-              setStep('success');
-              return;
-            }
-            if (dep?.status === 'failed') { setDeployError('Deployment failed. Check Celery logs.'); return; }
-            setDeployLogs((prev) => {
-              const msg = `Status: ${dep?.status ?? 'queued'}…`;
-              if (prev[prev.length - 1]?.text === msg) return prev;
-              return [...prev, { text: msg }];
-            });
-          } catch { /* keep polling */ }
-        }
-        setDeployError('Deployment timed out. Check your cloud console.');
-      }
-    } catch (e) {
-      setDeployError(e instanceof Error ? e.message : 'Deploy failed');
+      setDeployError(err.message ?? 'Deploy failed');
     }
   }
 
@@ -177,6 +201,7 @@ export default function DeployModal({ appId, open, onClose }: Props) {
           {/* Header */}
           <div className="flex items-center justify-between px-5 py-4 border-b" style={{ borderColor: 'var(--border)' }}>
             <h2 className="text-sm font-semibold text-slate-200">
+              {step === 'gate' && 'Preview Required'}
               {step === 'account' && 'Deploy to Cloud'}
               {step === 'preflight' && 'Permission Check'}
               {step === 'cost' && 'Cost Estimate'}
@@ -188,6 +213,45 @@ export default function DeployModal({ appId, open, onClose }: Props) {
               <X className="w-4 h-4" />
             </button>
           </div>
+
+          {/* Step: gate */}
+          {step === 'gate' && (
+            <div className="p-5 flex flex-col gap-4">
+              {gateChecking ? (
+                <div className="flex items-center gap-2 text-sm text-slate-400">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Checking for a live preview…
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg text-xs text-amber-300"
+                    style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)' }}>
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-400" />
+                    <span>{gate?.message ?? "This code hasn't been previewed yet."}</span>
+                  </div>
+
+                  <button onClick={() => { onSimulate?.(); onClose(); }}
+                    className="flex items-center justify-center gap-1.5 w-full py-2.5 rounded-xl text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-500 transition-colors">
+                    <Zap className="w-3.5 h-3.5" />
+                    Run simulation
+                  </button>
+
+                  <div className="pt-1 border-t" style={{ borderColor: 'var(--border)' }}>
+                    <label className="flex items-start gap-2 pt-3 text-xs text-slate-400 cursor-pointer">
+                      <input type="checkbox" checked={deployWithoutPreview}
+                        onChange={(e) => setDeployWithoutPreview(e.target.checked)}
+                        className="mt-0.5" />
+                      <span>Deploy without previewing (not recommended) — you&apos;ll ship code you haven&apos;t seen run.</span>
+                    </label>
+                    <button onClick={() => setStep('account')} disabled={!deployWithoutPreview}
+                      className="mt-3 w-full py-2.5 rounded-xl text-sm font-medium border border-slate-700 text-slate-300 hover:border-slate-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                      Continue anyway →
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           {/* Step: account */}
           {step === 'account' && (

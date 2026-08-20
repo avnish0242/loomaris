@@ -5,7 +5,8 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import {
   getMe, listJoinRequests, approveJoinRequest, rejectJoinRequest,
   listMembers, removeMember, inviteMember, listCloudAccounts,
-  getCloudSetupInfo, connectCloudRoleAccount, verifyCloudAccount,
+  getCloudSetupInfo, connectCloudRoleAccount, connectAzureAccount, connectGcpAccount,
+  verifyCloudAccount, getGithubStatus, startGithubInstall,
   saveClaudeKey, getClaudeKeyStatus, updateOrg,
   type Me, type JoinRequest, type OrgMember, type CloudAccount, type CloudSetupInfo,
 } from '@/lib/api';
@@ -284,10 +285,38 @@ function IntegrationsTab({ orgId }: { orgId: string }) {
   const [awsError, setAwsError] = useState<string | null>(null);
   const [verifying, setVerifying] = useState<string | null>(null);
 
+  // Azure — key-based, no multi-step trust-policy dance like AWS needs
+  const [azureForm, setAzureForm] = useState({ display_name: '', tenant_id: '', client_id: '', client_secret: '', subscription_id: '' });
+  const [connectingAzure, setConnectingAzure] = useState(false);
+  const [azureError, setAzureError] = useState<string | null>(null);
+
+  // GCP — service-account JSON key upload
+  const [gcpForm, setGcpForm] = useState({ display_name: '', project_id: '', service_account_json: '' });
+  const [connectingGcp, setConnectingGcp] = useState(false);
+  const [gcpError, setGcpError] = useState<string | null>(null);
+
+  // GitHub App install
+  const [githubStatus, setGithubStatus] = useState<{ connected: boolean; account_login: string | null } | null>(null);
+  const [connectingGithub, setConnectingGithub] = useState(false);
+  const [githubError, setGithubError] = useState<string | null>(null);
+
   useEffect(() => {
     getClaudeKeyStatus().then(setKeyStatus).catch(() => {});
     listCloudAccounts().then(setCloudAccounts).catch(() => {});
+    getGithubStatus().then(setGithubStatus).catch(() => {});
   }, []);
+
+  const connectGithub = async () => {
+    setConnectingGithub(true);
+    setGithubError(null);
+    try {
+      const { install_url } = await startGithubInstall(orgId);
+      window.location.href = install_url;
+    } catch (e: any) {
+      setGithubError(e.message);
+      setConnectingGithub(false);
+    }
+  };
 
   const saveKey = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -339,7 +368,34 @@ function IntegrationsTab({ orgId }: { orgId: string }) {
     finally { setVerifying(null); }
   };
 
+  const connectAzure = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setConnectingAzure(true);
+    setAzureError(null);
+    try {
+      await connectAzureAccount(azureForm);
+      setCloudAccounts(await listCloudAccounts());
+      setAzureForm({ display_name: '', tenant_id: '', client_id: '', client_secret: '', subscription_id: '' });
+    } catch (e: any) { setAzureError(e.message); }
+    finally { setConnectingAzure(false); }
+  };
+
+  const connectGcp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setConnectingGcp(true);
+    setGcpError(null);
+    try {
+      await connectGcpAccount(gcpForm);
+      setCloudAccounts(await listCloudAccounts());
+      setGcpForm({ display_name: '', project_id: '', service_account_json: '' });
+    } catch (e: any) { setGcpError(e.message); }
+    finally { setConnectingGcp(false); }
+  };
+
   const trustPolicy = setupInfo ? JSON.stringify(setupInfo.trust_policy, null, 2) : '';
+  const awsAccounts = cloudAccounts.filter((a) => a.provider === 'aws');
+  const azureAccounts = cloudAccounts.filter((a) => a.provider === 'azure');
+  const gcpAccounts = cloudAccounts.filter((a) => a.provider === 'gcp');
 
   return (
     <div className="space-y-6">
@@ -399,9 +455,9 @@ function IntegrationsTab({ orgId }: { orgId: string }) {
           </div>
         </div>
 
-        {cloudAccounts.length > 0 ? (
+        {awsAccounts.length > 0 ? (
           <div className="space-y-2">
-            {cloudAccounts.map((acct) => (
+            {awsAccounts.map((acct) => (
               <div key={acct.id} className="flex items-center gap-3 px-4 py-3 rounded-lg
                 bg-white/[0.02] border" style={{ borderColor: 'var(--border)' }}>
                 <span className={`w-2 h-2 rounded-full shrink-0
@@ -536,25 +592,180 @@ function IntegrationsTab({ orgId }: { orgId: string }) {
         )}
       </div>
 
-      {/* GitHub placeholder */}
-      <div className="rounded-xl border p-5 opacity-60" style={{ background: 'var(--card)', borderColor: 'var(--border)' }}>
-        <div className="flex items-start gap-3">
+      {/* Azure Cloud */}
+      <div className="rounded-xl border p-5" style={{ background: 'var(--card)', borderColor: 'var(--border)' }}>
+        <div className="flex items-start gap-3 mb-4">
+          <div className="w-8 h-8 rounded-lg bg-sky-500/10 border border-sky-500/20
+            flex items-center justify-center shrink-0">
+            <Cloud className="w-4 h-4 text-sky-400" />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-slate-200">Azure Cloud Account</p>
+            <p className="text-xs text-slate-500 mt-0.5">Connect a service principal for deployments</p>
+          </div>
+        </div>
+
+        {azureAccounts.length > 0 && (
+          <div className="space-y-2 mb-3">
+            {azureAccounts.map((acct) => (
+              <div key={acct.id} className="flex items-center gap-3 px-4 py-3 rounded-lg
+                bg-white/[0.02] border" style={{ borderColor: 'var(--border)' }}>
+                <span className={`w-2 h-2 rounded-full shrink-0
+                  ${acct.status === 'verified' ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-slate-200 truncate">{acct.display_name}</p>
+                  <p className="text-xs text-slate-500 font-mono truncate">{acct.external_id}</p>
+                </div>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium border
+                  ${acct.status === 'verified'
+                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                    : 'bg-amber-500/10 text-amber-400 border-amber-500/20'}`}>
+                  {acct.status}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <form onSubmit={connectAzure} className="space-y-2">
+          <input required placeholder="Display name" value={azureForm.display_name}
+            onChange={(e) => setAzureForm((f) => ({ ...f, display_name: e.target.value }))}
+            className="w-full px-3 py-2 rounded-lg text-sm bg-white/[0.04] border text-slate-200
+              placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 transition-colors"
+            style={{ borderColor: 'var(--border)' }} />
+          <div className="grid grid-cols-2 gap-2">
+            <input required placeholder="Tenant ID" value={azureForm.tenant_id}
+              onChange={(e) => setAzureForm((f) => ({ ...f, tenant_id: e.target.value }))}
+              className="px-3 py-2 rounded-lg text-sm font-mono bg-white/[0.04] border text-slate-200
+                placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 transition-colors"
+              style={{ borderColor: 'var(--border)' }} />
+            <input required placeholder="Subscription ID" value={azureForm.subscription_id}
+              onChange={(e) => setAzureForm((f) => ({ ...f, subscription_id: e.target.value }))}
+              className="px-3 py-2 rounded-lg text-sm font-mono bg-white/[0.04] border text-slate-200
+                placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 transition-colors"
+              style={{ borderColor: 'var(--border)' }} />
+            <input required placeholder="Client ID" value={azureForm.client_id}
+              onChange={(e) => setAzureForm((f) => ({ ...f, client_id: e.target.value }))}
+              className="px-3 py-2 rounded-lg text-sm font-mono bg-white/[0.04] border text-slate-200
+                placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 transition-colors"
+              style={{ borderColor: 'var(--border)' }} />
+            <input required type="password" placeholder="Client secret" value={azureForm.client_secret}
+              onChange={(e) => setAzureForm((f) => ({ ...f, client_secret: e.target.value }))}
+              className="px-3 py-2 rounded-lg text-sm font-mono bg-white/[0.04] border text-slate-200
+                placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 transition-colors"
+              style={{ borderColor: 'var(--border)' }} />
+          </div>
+          <button type="submit" disabled={connectingAzure}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium
+              bg-indigo-500/20 text-indigo-300 border border-indigo-500/30
+              hover:bg-indigo-500/30 transition-all disabled:opacity-50">
+            {connectingAzure ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+            Connect & verify
+          </button>
+        </form>
+        {azureError && <p className="mt-2 text-xs text-rose-400">{azureError}</p>}
+      </div>
+
+      {/* GCP Cloud */}
+      <div className="rounded-xl border p-5" style={{ background: 'var(--card)', borderColor: 'var(--border)' }}>
+        <div className="flex items-start gap-3 mb-4">
+          <div className="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/20
+            flex items-center justify-center shrink-0">
+            <Cloud className="w-4 h-4 text-blue-400" />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-slate-200">GCP Cloud Account</p>
+            <p className="text-xs text-slate-500 mt-0.5">Connect a service account key for deployments</p>
+          </div>
+        </div>
+
+        {gcpAccounts.length > 0 && (
+          <div className="space-y-2 mb-3">
+            {gcpAccounts.map((acct) => (
+              <div key={acct.id} className="flex items-center gap-3 px-4 py-3 rounded-lg
+                bg-white/[0.02] border" style={{ borderColor: 'var(--border)' }}>
+                <span className={`w-2 h-2 rounded-full shrink-0
+                  ${acct.status === 'verified' ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-slate-200 truncate">{acct.display_name}</p>
+                  <p className="text-xs text-slate-500 font-mono truncate">{acct.external_id}</p>
+                </div>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium border
+                  ${acct.status === 'verified'
+                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                    : 'bg-amber-500/10 text-amber-400 border-amber-500/20'}`}>
+                  {acct.status}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <form onSubmit={connectGcp} className="space-y-2">
+          <div className="grid grid-cols-2 gap-2">
+            <input required placeholder="Display name" value={gcpForm.display_name}
+              onChange={(e) => setGcpForm((f) => ({ ...f, display_name: e.target.value }))}
+              className="px-3 py-2 rounded-lg text-sm bg-white/[0.04] border text-slate-200
+                placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 transition-colors"
+              style={{ borderColor: 'var(--border)' }} />
+            <input required placeholder="Project ID" value={gcpForm.project_id}
+              onChange={(e) => setGcpForm((f) => ({ ...f, project_id: e.target.value }))}
+              className="px-3 py-2 rounded-lg text-sm font-mono bg-white/[0.04] border text-slate-200
+                placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 transition-colors"
+              style={{ borderColor: 'var(--border)' }} />
+          </div>
+          <textarea required placeholder="Paste the service-account key JSON…" rows={3}
+            value={gcpForm.service_account_json}
+            onChange={(e) => setGcpForm((f) => ({ ...f, service_account_json: e.target.value }))}
+            className="w-full px-3 py-2 rounded-lg text-xs font-mono bg-white/[0.04] border text-slate-200
+              placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 transition-colors resize-y"
+            style={{ borderColor: 'var(--border)' }} />
+          <button type="submit" disabled={connectingGcp}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium
+              bg-indigo-500/20 text-indigo-300 border border-indigo-500/30
+              hover:bg-indigo-500/30 transition-all disabled:opacity-50">
+            {connectingGcp ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+            Connect & verify
+          </button>
+        </form>
+        {gcpError && <p className="mt-2 text-xs text-rose-400">{gcpError}</p>}
+      </div>
+
+      {/* GitHub Integration */}
+      <div className="rounded-xl border p-5" style={{ background: 'var(--card)', borderColor: 'var(--border)' }}>
+        <div className="flex items-start gap-3 mb-4">
           <div className="w-8 h-8 rounded-lg bg-white/5 border border-white/10
             flex items-center justify-center shrink-0">
             <Key className="w-4 h-4 text-slate-400" />
           </div>
           <div className="flex-1">
-            <div className="flex items-center gap-2">
-              <p className="text-sm font-semibold text-slate-300">GitHub Integration</p>
-              <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-slate-700 text-slate-400 border border-slate-600 font-medium uppercase tracking-wide">
-                Coming soon
-              </span>
-            </div>
+            <p className="text-sm font-semibold text-slate-300">GitHub Integration</p>
             <p className="text-xs text-slate-500 mt-1">
               Connect your org&apos;s GitHub to push generated code directly to your repositories.
             </p>
           </div>
         </div>
+
+        {githubStatus?.connected ? (
+          <div className="flex items-center gap-3 px-4 py-3 rounded-lg bg-white/[0.02] border"
+            style={{ borderColor: 'var(--border)' }}>
+            <span className="w-2 h-2 rounded-full shrink-0 bg-emerald-400" />
+            <p className="text-sm font-medium text-slate-200">{githubStatus.account_login}</p>
+            <span className="ml-auto text-[10px] px-2 py-0.5 rounded-full font-medium border
+              bg-emerald-500/10 text-emerald-400 border-emerald-500/20">connected</span>
+          </div>
+        ) : (
+          <>
+            <button onClick={connectGithub} disabled={connectingGithub}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-medium
+                bg-indigo-500/20 text-indigo-300 border border-indigo-500/30
+                hover:bg-indigo-500/30 transition-all disabled:opacity-50">
+              {connectingGithub ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ChevronRight className="w-3.5 h-3.5" />}
+              Connect GitHub
+            </button>
+            {githubError && <p className="mt-2 text-xs text-rose-400">{githubError}</p>}
+          </>
+        )}
       </div>
     </div>
   );

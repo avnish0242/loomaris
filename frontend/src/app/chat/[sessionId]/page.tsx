@@ -3,13 +3,14 @@
 import { useParams, useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import ChatInput from '@/components/ChatInput';
-import MessageBubble, { type Message } from '@/components/MessageBubble';
+import MessageBubble, { type Message, type ToolCall, type ToolConfirmExtra } from '@/components/MessageBubble';
 import PreviewPane from '@/components/PreviewPane';
 import ActionBar from '@/components/ActionBar';
 import CodeDrawer from '@/components/CodeDrawer';
 import DeployModal from '@/components/DeployModal';
-import { getHistory, getSession, getApp, startSimulation } from '@/lib/api';
-import { streamMessage } from '@/lib/stream';
+import GithubExportModal from '@/components/GithubExportModal';
+import { getHistory, getSession, getApp, startSimulation, listCloudAccounts, getGithubStatus, type CloudAccount } from '@/lib/api';
+import { streamMessage, confirmToolCall } from '@/lib/stream';
 import { AlertTriangle } from 'lucide-react';
 
 export default function ChatPage() {
@@ -29,6 +30,9 @@ export default function ChatPage() {
   const [previewKey, setPreviewKey] = useState(0);  // bump to force PreviewPane remount/rebuild
   const [codeDrawerOpen, setCodeDrawerOpen] = useState(false);
   const [deployModalOpen, setDeployModalOpen] = useState(false);
+  const [githubExportOpen, setGithubExportOpen] = useState(false);
+  const [githubConnected, setGithubConnected] = useState(false);
+  const [cloudAccounts, setCloudAccounts] = useState<CloudAccount[]>([]);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const sentFirst = useRef(false);
@@ -73,6 +77,24 @@ export default function ChatPage() {
     });
   }, [appId]);
 
+  // Cloud accounts — only needed to populate a deploy_app tool-call card's
+  // account picker, but cheap enough to fetch once files exist rather than
+  // wait for the first deploy_app call to show up.
+  useEffect(() => {
+    if (!hasFiles) return;
+    listCloudAccounts()
+      .then((accs) => setCloudAccounts(accs.filter((a) => a.status === 'verified')))
+      .catch(() => {});
+  }, [hasFiles]);
+
+  // GitHub export button only shows once the org has actually connected an account.
+  useEffect(() => {
+    if (!hasFiles) return;
+    getGithubStatus()
+      .then((s) => setGithubConnected(s.connected))
+      .catch(() => {});
+  }, [hasFiles]);
+
   // Auto-send first message from home page
   useEffect(() => {
     const first = searchParams.get('first');
@@ -115,6 +137,28 @@ export default function ChatPage() {
           // Auto-trigger preview on first generation
           setAutoPreview(true);
           setPreviewKey((k) => k + 1);
+        } else if (event.type === 'tool_call_pending') {
+          setMessages((prev) => {
+            const msgs = [...prev];
+            const last = msgs[msgs.length - 1];
+            if (!last || last.role !== 'assistant') return msgs;
+            msgs[msgs.length - 1] = {
+              ...last,
+              toolCall: {
+                turnId: event.turn_id,
+                toolUseId: event.tool_use_id,
+                toolName: event.tool_name as ToolCall['toolName'],
+                input: event.input,
+                summary: event.summary,
+                state: 'pending',
+              },
+            };
+            return msgs;
+          });
+        } else if (event.type === 'tool_result') {
+          // Only the auto-executed get_app_status comes through here during a normal
+          // send() — its grounded answer is already arriving as ordinary 'text' events,
+          // so there's nothing further to render for it.
         } else if (event.type === 'done') {
           setMessages((prev) => {
             const msgs = [...prev];
@@ -130,6 +174,70 @@ export default function ChatPage() {
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Stream failed');
+      setMessages((prev) => prev.slice(0, -1));
+    } finally {
+      setStreaming(false);
+    }
+  };
+
+  const handleToolConfirm = async (
+    toolCall: ToolCall,
+    decision: 'approve' | 'deny',
+    extra?: ToolConfirmExtra,
+  ) => {
+    // Reflect the choice immediately so the buttons disappear before the network round-trip.
+    setMessages((prev) => prev.map((m) =>
+      m.toolCall?.toolUseId === toolCall.toolUseId
+        ? { ...m, toolCall: { ...m.toolCall, state: decision === 'approve' ? 'approved' : 'denied' } }
+        : m
+    ));
+
+    setStreaming(true);
+    setError(null);
+    setMessages((prev) => [...prev, { role: 'assistant', content: '', streaming: true }]);
+
+    try {
+      for await (const event of confirmToolCall(sessionId, toolCall.turnId, toolCall.toolUseId, decision, extra)) {
+        if (event.type === 'text') {
+          setMessages((prev) => {
+            const msgs = [...prev];
+            const last = msgs[msgs.length - 1];
+            if (!last || last.role !== 'assistant') return msgs;
+            msgs[msgs.length - 1] = { ...last, content: last.content + event.text };
+            return msgs;
+          });
+        } else if (event.type === 'tool_result') {
+          const blocked = event.status === 'error' && event.detail?.error === 'simulation_required';
+          setMessages((prev) => prev.map((m) => {
+            if (m.toolCall?.toolUseId !== toolCall.toolUseId) return m;
+            return blocked
+              ? { ...m, toolCall: { ...m.toolCall, state: 'blocked', blockedMessage: String(event.detail?.message ?? '') } }
+              : { ...m, toolCall: { ...m.toolCall, state: 'resolved' } };
+          }));
+          if (event.status === 'ok') {
+            // A real simulate/deploy just kicked off — surface it in the preview pane
+            // the same way the ActionBar buttons do.
+            if (toolCall.toolName === 'simulate_app') {
+              setSimulationMode(true);
+              setAutoPreview(true);
+              setPreviewKey((k) => k + 1);
+            }
+          }
+        } else if (event.type === 'done') {
+          setMessages((prev) => {
+            const msgs = [...prev];
+            const last = msgs[msgs.length - 1];
+            if (!last) return msgs;
+            msgs[msgs.length - 1] = { ...last, streaming: false };
+            return msgs;
+          });
+        } else if (event.type === 'error') {
+          setError(event.message);
+          setMessages((prev) => prev.slice(0, -1));
+        }
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Confirmation failed');
       setMessages((prev) => prev.slice(0, -1));
     } finally {
       setStreaming(false);
@@ -186,7 +294,12 @@ export default function ChatPage() {
               )}
 
               {messages.map((msg, i) => (
-                <MessageBubble key={msg.id ?? i} message={msg} />
+                <MessageBubble
+                  key={msg.id ?? i}
+                  message={msg}
+                  cloudAccounts={cloudAccounts}
+                  onConfirmTool={handleToolConfirm}
+                />
               ))}
 
               {error && (
@@ -209,6 +322,7 @@ export default function ChatPage() {
               onSimulate={handleSimulate}
               onViewCode={() => setCodeDrawerOpen(true)}
               onDeploy={() => setDeployModalOpen(true)}
+              onExportGithub={githubConnected ? () => setGithubExportOpen(true) : undefined}
             />
           )}
 
@@ -251,6 +365,15 @@ export default function ChatPage() {
           appId={appId}
           open={deployModalOpen}
           onClose={() => setDeployModalOpen(false)}
+          onSimulate={handleSimulate}
+        />
+      )}
+      {appId && appSlug && (
+        <GithubExportModal
+          appId={appId}
+          appSlug={appSlug}
+          open={githubExportOpen}
+          onClose={() => setGithubExportOpen(false)}
         />
       )}
     </div>

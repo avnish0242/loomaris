@@ -1,14 +1,34 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Components } from 'react-markdown';
-import { Copy, Check, FileCode } from 'lucide-react';
+import { Copy, Check, FileCode, Zap, CloudUpload } from 'lucide-react';
 import { useState } from 'react';
+import type { CloudAccount } from '@/lib/api';
+
+export interface ToolCall {
+  turnId: string;
+  toolUseId: string;
+  toolName: 'simulate_app' | 'deploy_app';
+  input: Record<string, unknown>;
+  summary: string;
+  // pending: awaiting Confirm/Deny. blocked: deploy_app hit the simulation gate —
+  // offer an explicit "deploy anyway" instead of quietly retrying. approved/denied
+  // /resolved: terminal, card becomes a quiet status line.
+  state: 'pending' | 'approved' | 'denied' | 'blocked' | 'resolved';
+  blockedMessage?: string;
+}
 
 export interface Message {
   id?: string;
   role: 'user' | 'assistant';
   content: string;
   streaming?: boolean;
+  toolCall?: ToolCall;
+}
+
+export interface ToolConfirmExtra {
+  cloud_account_id?: string;
+  deploy_without_preview?: boolean;
 }
 
 function CopyButton({ text }: { text: string }) {
@@ -82,6 +102,86 @@ const mdComponents: Components = {
   },
 };
 
+function ToolCallCard({
+  toolCall,
+  cloudAccounts,
+  onConfirm,
+}: {
+  toolCall: ToolCall;
+  cloudAccounts: CloudAccount[];
+  onConfirm: (decision: 'approve' | 'deny', extra?: ToolConfirmExtra) => void;
+}) {
+  const isDeploy = toolCall.toolName === 'deploy_app';
+  const [accountId, setAccountId] = useState<string>(cloudAccounts[0]?.id ?? '');
+  const Icon = isDeploy ? CloudUpload : Zap;
+
+  const wrap = (children: React.ReactNode) => (
+    <div className="mt-2 mb-1 max-w-[420px] rounded-xl border px-4 py-3"
+      style={{ background: 'rgba(99,102,241,0.05)', borderColor: 'rgba(129,140,248,0.2)' }}>
+      <div className="flex items-center gap-2 mb-2">
+        <Icon className="w-3.5 h-3.5 text-indigo-400" />
+        <span className="text-xs font-medium text-slate-200">{toolCall.summary}</span>
+      </div>
+      {children}
+    </div>
+  );
+
+  if (toolCall.state === 'blocked') {
+    return wrap(
+      <div className="flex flex-col gap-2">
+        <p className="text-xs text-amber-300">{toolCall.blockedMessage ?? 'Blocked by the simulation gate.'}</p>
+        <div className="flex gap-2">
+          <button
+            onClick={() => onConfirm('approve', { cloud_account_id: accountId, deploy_without_preview: true })}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium border border-amber-500/40 text-amber-300 hover:border-amber-500/70 transition-all">
+            Deploy anyway
+          </button>
+          <button
+            onClick={() => onConfirm('deny')}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-slate-200 transition-all">
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (toolCall.state !== 'pending') {
+    const label = { approved: 'Confirmed', denied: 'Declined', resolved: 'Done' }[toolCall.state];
+    return wrap(<span className="text-xs text-slate-500">{label}</span>);
+  }
+
+  return wrap(
+    <div className="flex flex-col gap-2">
+      {isDeploy && cloudAccounts.length > 1 && (
+        <select value={accountId} onChange={(e) => setAccountId(e.target.value)}
+          className="text-xs rounded-lg px-2 py-1.5 border bg-transparent text-slate-300"
+          style={{ borderColor: 'var(--border)' }}>
+          {cloudAccounts.map((a) => (
+            <option key={a.id} value={a.id}>{a.display_name} ({a.provider})</option>
+          ))}
+        </select>
+      )}
+      {isDeploy && cloudAccounts.length === 0 && (
+        <p className="text-xs text-amber-300">No verified cloud account connected — add one in Settings first.</p>
+      )}
+      <div className="flex gap-2">
+        <button
+          disabled={isDeploy && !accountId}
+          onClick={() => onConfirm('approve', isDeploy ? { cloud_account_id: accountId } : undefined)}
+          className="px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition-all">
+          Confirm
+        </button>
+        <button
+          onClick={() => onConfirm('deny')}
+          className="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-slate-200 transition-all">
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // Typing dots for empty streaming state
 function TypingDots() {
   return (
@@ -99,7 +199,15 @@ function TypingDots() {
   );
 }
 
-export default function MessageBubble({ message }: { message: Message }) {
+export default function MessageBubble({
+  message,
+  cloudAccounts = [],
+  onConfirmTool,
+}: {
+  message: Message;
+  cloudAccounts?: CloudAccount[];
+  onConfirmTool?: (toolCall: ToolCall, decision: 'approve' | 'deny', extra?: ToolConfirmExtra) => void;
+}) {
   const isUser = message.role === 'user';
 
   if (isUser) {
@@ -143,6 +251,14 @@ export default function MessageBubble({ message }: { message: Message }) {
                 animate-cursor-blink align-text-bottom" />
             )}
           </div>
+        )}
+
+        {message.toolCall && (
+          <ToolCallCard
+            toolCall={message.toolCall}
+            cloudAccounts={cloudAccounts}
+            onConfirm={(decision, extra) => onConfirmTool?.(message.toolCall!, decision, extra)}
+          />
         )}
       </div>
     </div>

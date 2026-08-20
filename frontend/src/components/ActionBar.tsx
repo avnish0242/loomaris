@@ -1,6 +1,6 @@
 'use client';
 
-import { Code2, CloudUpload, Download, Zap } from 'lucide-react';
+import { Code2, CloudUpload, Download, Zap, GitFork } from 'lucide-react';
 import { downloadArchive } from '@/lib/api';
 
 interface Props {
@@ -10,9 +10,11 @@ interface Props {
   onViewCode: () => void;
   onDeploy: () => void;
   onSimulate: () => void;
+  /** Shown only when the org has an active GitHub connection. */
+  onExportGithub?: () => void;
 }
 
-export default function ActionBar({ appId, appSlug, budgetRemaining, onViewCode, onDeploy, onSimulate }: Props) {
+export default function ActionBar({ appId, appSlug, budgetRemaining, onViewCode, onDeploy, onSimulate, onExportGithub }: Props) {
   const budgetLabel = budgetRemaining != null
     ? `$${budgetRemaining.toFixed(2)} remaining this month`
     : 'Up to 15 min free';
@@ -54,6 +56,15 @@ export default function ActionBar({ appId, appSlug, budgetRemaining, onViewCode,
         <Download className="w-3.5 h-3.5" />
         Download
       </button>
+
+      {onExportGithub && (
+        <button
+          onClick={onExportGithub}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-300 border border-slate-700 hover:border-slate-500 hover:bg-slate-800 transition-all">
+          <GitFork className="w-3.5 h-3.5" />
+          Push to GitHub
+        </button>
+      )}
     </div>
   );
 }
