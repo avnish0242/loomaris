@@ -21,24 +21,15 @@ log = logging.getLogger(__name__)
 
 
 def _update_sim_sync(session_id: str, org_slug: str, **kwargs) -> None:
-    from sqlalchemy import create_engine, text
-    from sqlalchemy.orm import Session
-    from app.core.config import settings
+    from app.database import sync_tenant_session
     from app.models.org import SimulationSession
 
-    sync_url = settings.DATABASE_URL.replace("+asyncpg", "")
-    engine = create_engine(sync_url)
-    real_schema = "org_" + org_slug.replace("-", "_")
-
-    with engine.connect() as conn:
-        conn.execute(text(f"SET search_path TO {real_schema}, public"))
-        with Session(conn) as session:
-            sim = session.get(SimulationSession, uuid.UUID(session_id))
-            if sim:
-                for k, v in kwargs.items():
-                    setattr(sim, k, v)
-                session.commit()
-    engine.dispose()
+    with sync_tenant_session(org_slug) as session:
+        sim = session.get(SimulationSession, uuid.UUID(session_id))
+        if sim:
+            for k, v in kwargs.items():
+                setattr(sim, k, v)
+            session.commit()
 
 
 @celery_app.task(
@@ -158,21 +149,12 @@ def run_simulation(
 
 def _get_app_slug(app_id: str, org_slug: str) -> str:
     try:
-        from sqlalchemy import create_engine, text
-        from sqlalchemy.orm import Session
-        from app.core.config import settings
+        from app.database import sync_tenant_session
         from app.models.org import App
 
-        sync_url = settings.DATABASE_URL.replace("+asyncpg", "")
-        engine = create_engine(sync_url)
-        real_schema = "org_" + org_slug.replace("-", "_")
-        with engine.connect() as conn:
-            conn.execute(text(f"SET search_path TO {real_schema}, public"))
-            with Session(conn) as session:
-                app = session.get(App, uuid.UUID(app_id))
-                slug = app.slug if app else app_id
-        engine.dispose()
-        return slug
+        with sync_tenant_session(org_slug) as session:
+            app = session.get(App, uuid.UUID(app_id))
+            return app.slug if app else app_id
     except Exception as exc:
         log.warning("Could not look up app slug: %s", exc)
         return app_id
@@ -180,17 +162,15 @@ def _get_app_slug(app_id: str, org_slug: str) -> str:
 
 def _get_org_id(org_slug: str) -> str:
     try:
-        from sqlalchemy import create_engine, text
-        from app.core.config import settings
+        from sqlalchemy import text
 
-        sync_url = settings.DATABASE_URL.replace("+asyncpg", "")
-        engine = create_engine(sync_url)
-        with engine.connect() as conn:
-            row = conn.execute(
+        from app.database import sync_platform_session
+
+        with sync_platform_session() as session:
+            row = session.execute(
                 text("SELECT id FROM platform.organizations WHERE slug = :slug"),
                 {"slug": org_slug},
             ).fetchone()
-        engine.dispose()
-        return str(row[0]) if row else org_slug
+            return str(row[0]) if row else org_slug
     except Exception:
         return org_slug
