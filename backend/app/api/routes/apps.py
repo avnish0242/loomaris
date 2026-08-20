@@ -13,12 +13,17 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import TenantContext, get_current_user, get_tenant_context
+from app.api.deps import TenantContext, get_tenant_context
 from app.core.config import settings
 from app.database import get_db
 from app.models.org import App, ChatSession, CostEstimate, Deployment
-from app.models.platform import User
 from app.services.chat_service import create_session, get_or_create_app
+from app.services.chat_tools_service import (
+    ChatToolError,
+    SimulationGateRequired,
+    execute_deploy,
+    execute_simulate,
+)
 from app.services.deploy_service import build_and_deploy, get_container_status
 from app.services.git_service import (
     checkout_commit,
@@ -28,6 +33,7 @@ from app.services.git_service import (
 )
 from app.services.iac.generator import generate_pulumi_program
 from app.services.iac.detector import detect_app_type
+from app.services.simulation_gate_service import get_gate_status
 
 router = APIRouter(prefix="/apps", tags=["apps"])
 
@@ -46,6 +52,9 @@ class CloudDeployRequest(BaseModel):
     environment: Literal["preview", "staging", "production"] = "preview"
     confirm_cost: bool = False
     env_vars: dict[str, str] = {}
+    # Per-attempt override for the simulation gate — never a saved preference,
+    # must be explicitly set true on every call that needs to bypass it.
+    deploy_without_preview: bool = False
 
 
 class RollbackRequest(BaseModel):
@@ -82,6 +91,9 @@ def _deployment_out(d: Deployment) -> dict:
         "pulumi_stack_id": d.pulumi_stack_id,
         "outputs": d.outputs,
         "cost_snapshot": d.cost_snapshot,
+        "commit_sha": d.commit_sha,
+        "bypassed_simulation_gate": d.bypassed_simulation_gate,
+        "cloud_provider": d.cloud_provider,
         "deployed_at": d.deployed_at.isoformat() if d.deployed_at else None,
         "created_at": d.created_at.isoformat() if d.created_at else None,
     }
@@ -284,45 +296,56 @@ async def stop_preview(
 
 # ─── Cloud Deploy (Pulumi) ─────────────────────────────────────────────────────
 
+@router.get("/{app_id}/deploy-gate", summary="Check whether the current code can be deployed")
+async def deploy_gate(
+    app_id: uuid.UUID,
+    ctx: TenantContext = Depends(get_tenant_context),
+):
+    app = await _get_app_or_404(app_id, ctx.session)
+    gate = await get_gate_status(app, ctx.session)
+    return {
+        "passed": gate.passed,
+        "head_sha": gate.head_sha,
+        "active_simulation": (
+            {"session_id": str(gate.simulation.id), "url": gate.simulation.url}
+            if gate.simulation
+            else None
+        ),
+        "message": gate.message,
+    }
+
+
 @router.post("/{app_id}/cloud-deploy", summary="Deploy to cloud via Pulumi (async task)")
 async def cloud_deploy(
     app_id: uuid.UUID,
     body: CloudDeployRequest,
     ctx: TenantContext = Depends(get_tenant_context),
 ):
-    from app.workers.deploy_task import cloud_deploy_task
-
     app = await _get_app_or_404(app_id, ctx.session)
-    files = get_current_files(app.slug)
-    if not files:
-        raise HTTPException(status_code=400, detail="No files generated yet. Chat with Loomaris first.")
 
-    deployment = Deployment(
-        app_id=app_id,
-        cloud_account_id=body.cloud_account_id,
-        environment=body.environment,
-        status="queued",
-    )
-    ctx.session.add(deployment)
-    await ctx.session.commit()
-    await ctx.session.refresh(deployment)
-
-    task = cloud_deploy_task.apply_async(
-        kwargs={
-            "app_id": str(app_id),
-            "deployment_id": str(deployment.id),
-            "cloud_account_id": str(body.cloud_account_id),
-            "environment": body.environment,
-            "confirm_cost": body.confirm_cost,
-            "env_vars": body.env_vars,
-            "org_slug": ctx.org.slug,
-        },
-        queue="deploy",
-    )
+    try:
+        deployment, task_id = await execute_deploy(
+            ctx,
+            app,
+            environment=body.environment,
+            cloud_account_id=body.cloud_account_id,
+            deploy_without_preview=body.deploy_without_preview,
+        )
+    except SimulationGateRequired as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "simulation_required",
+                "head_sha": exc.gate.head_sha,
+                "message": exc.gate.message,
+            },
+        )
+    except ChatToolError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     return {
         "deployment_id": str(deployment.id),
-        "task_id": task.id,
+        "task_id": task_id,
         "status": "queued",
         "message": "Deploy task queued. Poll /cloud-deploy/{deployment_id}/status for progress.",
     }
@@ -588,34 +611,13 @@ async def run_preflight(
 async def start_simulation(
     app_id: uuid.UUID,
     ctx: TenantContext = Depends(get_tenant_context),
-    current_user: User = Depends(get_current_user),
 ):
-    from app.workers.simulate_task import run_simulation
-    from app.models.org import SimulationSession
-
     app = await _get_app_or_404(app_id, ctx.session)
-    files = get_current_files(app.slug)
-    if not files:
-        raise HTTPException(status_code=400, detail="No files generated yet. Chat with Loomaris first.")
 
-    session = SimulationSession(
-        app_id=app_id,
-        user_id=current_user.id,
-        status="building",
-    )
-    ctx.session.add(session)
-    await ctx.session.commit()
-    await ctx.session.refresh(session)
-
-    run_simulation.apply_async(
-        kwargs={
-            "app_id": str(app_id),
-            "org_slug": ctx.org.slug,
-            "user_id": str(current_user.id),
-            "session_id": str(session.id),
-        },
-        queue="deploy",
-    )
+    try:
+        session = await execute_simulate(ctx, app)
+    except ChatToolError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     return {
         "session_id": str(session.id),

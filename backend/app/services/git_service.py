@@ -107,6 +107,27 @@ def get_current_files(app_slug: str) -> list[GeneratedFile]:
         return []
 
 
+def get_head_sha(app_slug: str) -> str | None:
+    """Return the full (untruncated) HEAD commit sha for an app's repo, or None
+    if the repo doesn't exist yet or has no commits.
+
+    This is the real git sha used by the simulation gate to compare "what was
+    last simulated" against "what's about to be deployed" — do not confuse with
+    sim_service's own locally-named `commit_sha`, which is a sha256 hash of file
+    contents used only for Docker image tagging.
+    """
+    repo_path = REPOS_ROOT / app_slug
+    if not (repo_path / ".git").exists():
+        return None
+    try:
+        repo = git.Repo(repo_path)
+        if not repo.head.is_valid():
+            return None
+        return repo.head.commit.hexsha
+    except Exception:
+        return None
+
+
 def get_commit_log(app_slug: str, limit: int = 10) -> list[dict]:
     """Return recent commits as dicts with sha, message, date."""
     repo_path = REPOS_ROOT / app_slug
@@ -135,6 +156,31 @@ def checkout_commit(app_slug: str, sha: str) -> None:
         raise ValueError(f"No git repo found for app '{app_slug}'")
     repo = git.Repo(repo_path)
     repo.git.checkout(sha)
+
+
+def push_to_remote(app_slug: str, remote_url: str, branch: str = "main") -> None:
+    """Push the app's real local commit history to an external git remote (e.g. a
+    freshly-created GitHub repo). `remote_url` may embed a short-lived access token
+    (e.g. `https://x-access-token:{token}@github.com/org/repo.git`) — the temporary
+    remote is removed again immediately after the push so the token never sits in
+    `.git/config` longer than the push itself takes.
+    """
+    repo_path = REPOS_ROOT / app_slug
+    if not (repo_path / ".git").exists():
+        raise ValueError(f"No git repo found for app '{app_slug}'")
+
+    repo = git.Repo(repo_path)
+    if not repo.head.is_valid():
+        raise ValueError(f"App '{app_slug}' has no commits yet")
+
+    remote_name = "loomaris-export"
+    if remote_name in [r.name for r in repo.remotes]:
+        repo.delete_remote(remote_name)
+    remote = repo.create_remote(remote_name, remote_url)
+    try:
+        remote.push(refspec=f"{repo.head.commit.hexsha}:refs/heads/{branch}", force=True)
+    finally:
+        repo.delete_remote(remote_name)
 
 
 def create_zip_archive(app_slug: str) -> bytes:

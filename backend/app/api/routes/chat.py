@@ -1,4 +1,5 @@
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -8,7 +9,12 @@ from sqlalchemy import select
 from app.api.deps import TenantContext, get_tenant_context
 from app.models.org import ChatSession, ChatTurn
 from app.services.auth_service import get_anthropic_key  # now reads from org
-from app.services.chat_service import create_session, get_session_history, stream_chat
+from app.services.chat_service import (
+    create_session,
+    get_session_history,
+    resume_after_tool_confirmation,
+    stream_chat,
+)
 from app.services.guardrail_service import GuardrailAction, classify_message
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -20,6 +26,14 @@ class CreateSessionRequest(BaseModel):
 
 class SendMessageRequest(BaseModel):
     message: str
+
+
+class ToolConfirmationRequest(BaseModel):
+    turn_id: uuid.UUID
+    tool_use_id: str
+    decision: Literal["approve", "deny"]
+    cloud_account_id: uuid.UUID | None = None
+    deploy_without_preview: bool = False
 
 
 def _session_out(s: ChatSession) -> dict:
@@ -135,7 +149,52 @@ async def send_message(
         )
 
     return StreamingResponse(
-        stream_chat(ctx.session, session_id, body.message, api_key),
+        stream_chat(ctx, session_id, body.message, api_key),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/tool-confirmations",
+    summary="Approve or deny a pending simulate_app/deploy_app tool call — returns an SSE stream",
+)
+async def confirm_tool_call(
+    session_id: uuid.UUID,
+    body: ToolConfirmationRequest,
+    ctx: TenantContext = Depends(get_tenant_context),
+):
+    result = await ctx.session.execute(
+        select(ChatTurn).where(
+            ChatTurn.id == body.turn_id,
+            ChatTurn.session_id == session_id,
+            ChatTurn.pending_tool_use_id == body.tool_use_id,
+        )
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="No matching pending tool call found")
+
+    api_key = await get_anthropic_key(ctx.session, ctx.org.id)
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="No Claude API key configured. POST /api/v1/auth/claude-key first.",
+        )
+
+    return StreamingResponse(
+        resume_after_tool_confirmation(
+            ctx,
+            session_id,
+            body.turn_id,
+            body.decision,
+            api_key,
+            cloud_account_id=body.cloud_account_id,
+            deploy_without_preview=body.deploy_without_preview,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
