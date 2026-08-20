@@ -7,10 +7,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 
 ENV PATH="/root/.pulumi/bin:${PATH}"
 
-# Install Pulumi Python SDKs
+# Install Pulumi Python SDKs — one per cloud provider the platform's IaC generator
+# (backend/app/services/iac/{aws,azure,gcp}_templates.py) can target.
 RUN pip install --no-cache-dir \
     pulumi>=3.0 \
-    pulumi-aws>=6.0
+    pulumi-aws>=6.0 \
+    pulumi-azure-native>=2.0 \
+    pulumi-gcp>=7.0
 
 WORKDIR /app
 

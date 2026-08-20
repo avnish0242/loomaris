@@ -1,4 +1,5 @@
 import asyncio
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -7,7 +8,7 @@ from botocore.exceptions import ClientError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import encrypt_value
+from app.core.security import decrypt_value, encrypt_value
 from app.models.platform import CloudAccount
 
 
@@ -194,6 +195,14 @@ async def connect_azure_account(
     """Validate Azure service principal via MSAL, then store credentials."""
     await _validate_azure_credentials(tenant_id, client_id, client_secret, subscription_id)
 
+    # Generic credentials_enc blob (new connections) — legacy access_key_enc/secret_key_enc/
+    # region columns are also kept populated for now so nothing else that reads them breaks,
+    # but get_credentials() below prefers credentials_enc whenever it's present.
+    credentials_enc = encrypt_value(json.dumps({
+        "tenant_id": tenant_id,
+        "client_id": client_id,
+        "client_secret": client_secret,
+    }))
     tenant_id_enc = encrypt_value(tenant_id)
     client_id_enc = encrypt_value(client_id)
     client_secret_enc = encrypt_value(client_secret)
@@ -212,6 +221,7 @@ async def connect_azure_account(
         account.access_key_enc = client_id_enc
         account.secret_key_enc = client_secret_enc
         account.region = tenant_id_enc
+        account.credentials_enc = credentials_enc
         account.status = "verified"
         account.last_verified_at = datetime.now(timezone.utc)
     else:
@@ -226,6 +236,7 @@ async def connect_azure_account(
             access_key_enc=client_id_enc,
             secret_key_enc=client_secret_enc,
             region=tenant_id_enc,
+            credentials_enc=credentials_enc,
             last_verified_at=datetime.now(timezone.utc),
         )
         db.add(account)
@@ -233,6 +244,108 @@ async def connect_azure_account(
     await db.commit()
     await db.refresh(account)
     return account
+
+
+async def connect_gcp_account(
+    db: AsyncSession,
+    org_id: uuid.UUID,
+    display_name: str,
+    project_id: str,
+    service_account_json: str,
+) -> CloudAccount:
+    """Validate a GCP service account key, then store it (encrypted) as this
+    account's credentials. `service_account_json` is the raw contents of a
+    downloaded service-account key file."""
+    await _validate_gcp_credentials(project_id, service_account_json)
+
+    credentials_enc = encrypt_value(json.dumps({
+        "project_id": project_id,
+        "service_account_json": service_account_json,
+    }))
+
+    result = await db.execute(
+        select(CloudAccount).where(
+            CloudAccount.org_id == org_id,
+            CloudAccount.external_id == project_id,
+            CloudAccount.provider == "gcp",
+        )
+    )
+    account = result.scalar_one_or_none()
+
+    if account:
+        account.display_name = display_name
+        account.credentials_enc = credentials_enc
+        account.status = "verified"
+        account.last_verified_at = datetime.now(timezone.utc)
+    else:
+        account = CloudAccount(
+            org_id=org_id,
+            provider="gcp",
+            display_name=display_name,
+            external_id=project_id,
+            vault_path="",
+            connection_type="keys",
+            status="verified",
+            credentials_enc=credentials_enc,
+            last_verified_at=datetime.now(timezone.utc),
+        )
+        db.add(account)
+
+    await db.commit()
+    await db.refresh(account)
+    return account
+
+
+async def _validate_gcp_credentials(project_id: str, service_account_json: str) -> dict:
+    """Validate a GCP service account key by requesting an access token for it."""
+    def _call():
+        try:
+            from google.oauth2 import service_account as gcp_service_account
+            import google.auth.transport.requests
+        except ImportError:
+            raise ValueError(
+                "google-auth package not installed — run: pip install google-auth"
+            )
+        try:
+            info = json.loads(service_account_json)
+        except json.JSONDecodeError:
+            raise ValueError("Service account key is not valid JSON")
+
+        creds = gcp_service_account.Credentials.from_service_account_info(
+            info, scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+        creds.refresh(google.auth.transport.requests.Request())
+        return {"project_id": project_id, "token": creds.token[:20] + "..."}
+
+    try:
+        return await asyncio.get_event_loop().run_in_executor(None, _call)
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"GCP credential validation failed: {exc}")
+
+
+def get_credentials(account: CloudAccount) -> dict:
+    """Return this account's provider-shaped credentials dict, decrypted.
+
+    Prefers the generic `credentials_enc` blob; falls back to decoding the
+    legacy AWS-named columns for Azure rows connected before that column
+    existed. AWS accounts don't use this at all — they go through STS
+    AssumeRole (see deploy_task._get_provider_creds) rather than stored keys.
+    """
+    if account.credentials_enc:
+        creds = json.loads(decrypt_value(account.credentials_enc))
+    elif account.provider == "azure" and account.access_key_enc and account.secret_key_enc and account.region:
+        creds = {
+            "client_id": decrypt_value(account.access_key_enc),
+            "client_secret": decrypt_value(account.secret_key_enc),
+            "tenant_id": decrypt_value(account.region),
+        }
+    else:
+        creds = {}
+    creds.setdefault("subscription_id", account.external_id)
+    creds.setdefault("project_id", account.external_id)
+    return creds
 
 
 async def _validate_azure_credentials(

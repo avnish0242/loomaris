@@ -51,12 +51,38 @@ def _pulumi_backend_url(stack_name: str) -> str:
     return "file:///pulumi-state"
 
 
+def provider_env(provider: str, creds: dict) -> list[str]:
+    """Map a provider-shaped credentials dict to the env vars its Pulumi plugin
+    expects, as ["-e", "KEY=VALUE", ...] docker run args."""
+    if provider == "aws":
+        return [
+            "-e", f"AWS_ACCESS_KEY_ID={creds.get('access_key_id', '')}",
+            "-e", f"AWS_SECRET_ACCESS_KEY={creds.get('secret_access_key', '')}",
+            "-e", f"AWS_SESSION_TOKEN={creds.get('session_token', '')}",
+            "-e", f"AWS_DEFAULT_REGION={creds.get('region', 'us-east-1')}",
+        ]
+    if provider == "azure":
+        return [
+            "-e", f"ARM_CLIENT_ID={creds.get('client_id', '')}",
+            "-e", f"ARM_CLIENT_SECRET={creds.get('client_secret', '')}",
+            "-e", f"ARM_TENANT_ID={creds.get('tenant_id', '')}",
+            "-e", f"ARM_SUBSCRIPTION_ID={creds.get('subscription_id', '')}",
+        ]
+    if provider == "gcp":
+        return [
+            "-e", f"GOOGLE_CREDENTIALS={creds.get('service_account_json', '')}",
+            "-e", f"GOOGLE_PROJECT={creds.get('project_id', '')}",
+        ]
+    raise ValueError(f"Unsupported cloud provider: {provider!r}")
+
+
 def _run_pulumi_in_container(
     program: str,
     stack_name: str,
-    aws_creds: dict,
+    provider_creds: dict,
     command: list[str],
     timeout: int = 300,
+    provider: str = "aws",
 ) -> tuple[bool, str, str]:
     """Run a pulumi command inside a resource-limited Docker container.
 
@@ -88,18 +114,15 @@ def _run_pulumi_in_container(
         docker_cmd = [
             "docker", "run",
             "--rm",
-            "--network=host",           # needed to reach AWS endpoints
+            "--network=host",           # needed to reach the cloud provider's API endpoints
             "--cpus=0.5",
             "--memory=512m",
             "--read-only",
             *tmpfs_args,
             # Mount the program directory (read-only)
             "-v", f"{tmpdir}:/app:ro",
-            # AWS credentials as env vars (not files) — ephemeral for this container only
-            "-e", f"AWS_ACCESS_KEY_ID={aws_creds.get('access_key_id', '')}",
-            "-e", f"AWS_SECRET_ACCESS_KEY={aws_creds.get('secret_access_key', '')}",
-            "-e", f"AWS_SESSION_TOKEN={aws_creds.get('session_token', '')}",
-            "-e", f"AWS_DEFAULT_REGION={aws_creds.get('region', 'us-east-1')}",
+            # Credentials as env vars (not files) — ephemeral for this container only
+            *provider_env(provider, provider_creds),
             "-e", f"PULUMI_BACKEND_URL={backend_url}",
             "-e", f"PULUMI_CONFIG_PASSPHRASE={passphrase}",
             "-w", "/app",
@@ -122,14 +145,15 @@ def _run_pulumi_in_container(
             return False, "", str(exc)
 
 
-def pulumi_preview(program: str, aws_creds: dict, stack_name: str) -> PreviewResult:
+def pulumi_preview(program: str, provider_creds: dict, stack_name: str, provider: str = "aws") -> PreviewResult:
     """Run `pulumi preview` and return a summary of planned changes."""
     success, stdout, stderr = _run_pulumi_in_container(
         program=program,
         stack_name=stack_name,
-        aws_creds=aws_creds,
+        provider_creds=provider_creds,
         command=["pulumi", "preview", "--stack", stack_name, "--json", "--non-interactive"],
         timeout=120,
+        provider=provider,
     )
 
     if not success:
@@ -144,12 +168,12 @@ def pulumi_preview(program: str, aws_creds: dict, stack_name: str) -> PreviewRes
         return PreviewResult(success=True, resource_count=0, plan_summary={"raw": stdout[:500]})
 
 
-def pulumi_up(program: str, aws_creds: dict, stack_name: str) -> ApplyResult:
+def pulumi_up(program: str, provider_creds: dict, stack_name: str, provider: str = "aws") -> ApplyResult:
     """Run `pulumi up` and return the stack outputs."""
     success, stdout, stderr = _run_pulumi_in_container(
         program=program,
         stack_name=stack_name,
-        aws_creds=aws_creds,
+        provider_creds=provider_creds,
         command=[
             "pulumi", "up",
             "--stack", stack_name,
@@ -158,6 +182,7 @@ def pulumi_up(program: str, aws_creds: dict, stack_name: str) -> ApplyResult:
             "--json",
         ],
         timeout=600,
+        provider=provider,
     )
 
     if not success:
@@ -178,14 +203,15 @@ def pulumi_up(program: str, aws_creds: dict, stack_name: str) -> ApplyResult:
     return ApplyResult(success=True, outputs=outputs)
 
 
-def pulumi_destroy(stack_name: str, aws_creds: dict, program: str = "") -> DestroyResult:
+def pulumi_destroy(stack_name: str, provider_creds: dict, program: str = "", provider: str = "aws") -> DestroyResult:
     """Run `pulumi destroy` to tear down the stack."""
     success, stdout, stderr = _run_pulumi_in_container(
         program=program or "import pulumi",
         stack_name=stack_name,
-        aws_creds=aws_creds,
+        provider_creds=provider_creds,
         command=["pulumi", "destroy", "--stack", stack_name, "--yes", "--non-interactive"],
         timeout=600,
+        provider=provider,
     )
     if not success:
         return DestroyResult(success=False, error=stderr or "pulumi destroy failed")

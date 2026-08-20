@@ -13,6 +13,7 @@ from app.models.platform import CloudAccount, OrgMembership, User
 from app.services.cloud_service import (
     connect_aws_role_account,
     connect_azure_account,
+    connect_gcp_account,
     delete_cloud_account,
     get_cloud_accounts,
     verify_cloud_account,
@@ -42,6 +43,13 @@ class ConnectAzureRequest(BaseModel):
     client_id: str
     client_secret: str
     subscription_id: str
+
+
+class ConnectGcpRequest(BaseModel):
+    provider: Literal["gcp"]
+    display_name: str
+    project_id: str
+    service_account_json: str  # raw contents of a downloaded service-account key file
 
 
 def _account_out(account: CloudAccount) -> dict:
@@ -106,9 +114,9 @@ async def get_setup_info(
     }
 
 
-@router.post("/accounts", summary="Connect AWS (cross-account role) or Azure cloud account")
+@router.post("/accounts", summary="Connect an AWS, Azure, or GCP cloud account")
 async def connect_account(
-    body: ConnectAwsRoleRequest | ConnectAzureRequest,
+    body: ConnectAwsRoleRequest | ConnectAzureRequest | ConnectGcpRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -130,7 +138,7 @@ async def connect_account(
                 sts_external_id=sts_external_id,
                 region=body.region,
             )
-        else:
+        elif isinstance(body, ConnectAzureRequest):
             account = await connect_azure_account(
                 db,
                 org_id=org_id,
@@ -139,6 +147,14 @@ async def connect_account(
                 client_id=body.client_id,
                 client_secret=body.client_secret,
                 subscription_id=body.subscription_id,
+            )
+        else:
+            account = await connect_gcp_account(
+                db,
+                org_id=org_id,
+                display_name=body.display_name,
+                project_id=body.project_id,
+                service_account_json=body.service_account_json,
             )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))

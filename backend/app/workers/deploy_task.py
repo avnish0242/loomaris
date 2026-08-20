@@ -8,6 +8,7 @@ Runs the full cloud deployment pipeline:
   5. pulumi up (if confirm_cost=True)
   6. Update Deployment record throughout
 """
+import json
 import logging
 import uuid
 
@@ -20,26 +21,15 @@ log = logging.getLogger(__name__)
 
 def _update_deployment_sync(deployment_id: str, org_slug: str, **kwargs) -> None:
     """Synchronously update deployment record via a fresh sync DB connection."""
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import Session
-    from app.core.config import settings
+    from app.database import sync_tenant_session
     from app.models.org import Deployment
 
-    sync_url = settings.DATABASE_URL.replace("+asyncpg", "")
-    engine = create_engine(sync_url)
-    real_schema = "org_" + org_slug.replace("-", "_")
-
-    with engine.connect() as conn:
-        conn.execute(
-            __import__("sqlalchemy").text(f"SET search_path TO {real_schema}, platform, public")
-        )
-        with Session(conn) as session:
-            dep = session.get(Deployment, uuid.UUID(deployment_id))
-            if dep:
-                for key, value in kwargs.items():
-                    setattr(dep, key, value)
-                session.commit()
-    engine.dispose()
+    with sync_tenant_session(org_slug) as session:
+        dep = session.get(Deployment, uuid.UUID(deployment_id))
+        if dep:
+            for key, value in kwargs.items():
+                setattr(dep, key, value)
+            session.commit()
 
 
 @celery_app.task(
@@ -77,21 +67,24 @@ def cloud_deploy_task(
         _update_deployment_sync(deployment_id, org_slug, status="failed", outputs={"error": "No files"})
         return {"success": False, "error": "No generated files found"}
 
-    # ── Resolve cloud account credentials ─────────────────────────────────────
-    aws_creds = _get_aws_creds(cloud_account_id, org_slug)
-    if not aws_creds:
+    # ── Resolve cloud account credentials (provider determined by the account itself) ──
+    resolved = _get_provider_creds(cloud_account_id, org_slug)
+    if not resolved:
         _update_deployment_sync(deployment_id, org_slug, status="failed",
                                 outputs={"error": "Cloud account not found or not verified"})
         return {"success": False, "error": "Cloud account credentials unavailable"}
+    provider, creds = resolved
+    _update_deployment_sync(deployment_id, org_slug, cloud_provider=provider)
 
     # ── Detect app type + generate Pulumi program ─────────────────────────────
     target = detect_app_type(files)
     program = generate_pulumi_program(
         app_slug=_get_app_slug(app_id, org_slug),
         files=files,
-        aws_region=aws_creds.get("region", "us-east-1"),
-        aws_account_id=aws_creds.get("account_id", ""),
+        aws_region=creds.get("region", "us-east-1"),
+        aws_account_id=creds.get("account_id", creds.get("project_id", creds.get("subscription_id", ""))),
         target=target,
+        provider=provider,
     )
 
     # ── Validate program ──────────────────────────────────────────────────────
@@ -104,7 +97,7 @@ def cloud_deploy_task(
 
     # ── Pulumi preview ────────────────────────────────────────────────────────
     stack_name = f"loomaris-{org_slug}-{_get_app_slug(app_id, org_slug)}-{environment}"
-    preview = pulumi_preview(program, aws_creds, stack_name)
+    preview = pulumi_preview(program, creds, stack_name, provider=provider)
 
     if not preview.success:
         _update_deployment_sync(deployment_id, org_slug, status="failed",
@@ -128,7 +121,7 @@ def cloud_deploy_task(
 
     # ── Pulumi up ─────────────────────────────────────────────────────────────
     _update_deployment_sync(deployment_id, org_slug, status="applying")
-    apply_result = pulumi_up(program, aws_creds, stack_name)
+    apply_result = pulumi_up(program, creds, stack_name, provider=provider)
 
     if not apply_result.success:
         _update_deployment_sync(deployment_id, org_slug, status="failed",
@@ -159,111 +152,124 @@ def _slugify(app_id: str, org_slug: str) -> str:
 
 def _get_app_slug(app_id: str, org_slug: str) -> str:
     try:
-        from sqlalchemy import create_engine, text
-        from sqlalchemy.orm import Session
-        from app.core.config import settings
+        from app.database import sync_tenant_session
         from app.models.org import App
 
-        sync_url = settings.DATABASE_URL.replace("+asyncpg", "")
-        engine = create_engine(sync_url)
-        real_schema = "org_" + org_slug.replace("-", "_")
-
-        with engine.connect() as conn:
-            conn.execute(text(f"SET search_path TO {real_schema}, platform, public"))
-            with Session(conn) as session:
-                app = session.get(App, uuid.UUID(app_id))
-                slug = app.slug if app else app_id
-        engine.dispose()
-        return slug
+        with sync_tenant_session(org_slug) as session:
+            app = session.get(App, uuid.UUID(app_id))
+            return app.slug if app else app_id
     except Exception as exc:
         log.warning("Could not look up app slug: %s", exc)
         return app_id
 
 
-def _get_aws_creds(cloud_account_id: str, org_slug: str) -> dict | None:
-    """Retrieve AWS credentials via STS AssumeRole using the stored role ARN.
-    Returns None if the account is not found, not verified, or uses legacy key-based auth.
+def _get_provider_creds(cloud_account_id: str, org_slug: str) -> tuple[str, dict] | None:
+    """Resolve (provider, credentials) for a cloud account — the provider is read off
+    the account itself, not passed in, so callers never have to know it up front.
+
+    AWS: ephemeral session credentials via STS AssumeRole using Loomaris's deployer
+    identity (unchanged from the original AWS-only implementation).
+    Azure/GCP: the org's own service-principal / service-account credentials,
+    decrypted here and never persisted outside this process — read from the generic
+    `credentials_enc` column, with a fallback to the legacy AWS-named columns for
+    Azure rows created before that column existed.
     """
     try:
-        import boto3
-        from sqlalchemy import create_engine, text
-        from sqlalchemy.orm import Session
         from app.core.config import settings
+        from app.core.security import decrypt_value
+        from app.database import sync_platform_session
         from app.models.platform import CloudAccount
 
-        sync_url = settings.DATABASE_URL.replace("+asyncpg", "")
-        engine = create_engine(sync_url)
-
-        with engine.connect() as conn:
-            conn.execute(text("SET search_path TO platform, public"))
-            with Session(conn) as session:
-                account = session.get(CloudAccount, uuid.UUID(cloud_account_id))
-                if not account or account.status not in ("verified",):
-                    if account and account.status == "reconnect_required":
-                        log.error(
-                            "Cloud account %s requires reconnection via STS role (legacy keys rejected)",
-                            cloud_account_id,
-                        )
-                    return None
-
-                if account.connection_type != "role" or not account.role_arn or not account.sts_external_id:
+        with sync_platform_session() as session:
+            account = session.get(CloudAccount, uuid.UUID(cloud_account_id))
+            if not account or account.status not in ("verified",):
+                if account and account.status == "reconnect_required":
                     log.error(
-                        "Cloud account %s is not configured for STS role-based access", cloud_account_id
+                        "Cloud account %s requires reconnection (legacy keys rejected)",
+                        cloud_account_id,
                     )
-                    return None
+                return None
+            provider = account.provider
+            connection_type = account.connection_type
+            role_arn = account.role_arn
+            sts_external_id = account.sts_external_id
+            region = account.region
+            external_id = account.external_id
+            credentials_enc = account.credentials_enc
+            access_key_enc = account.access_key_enc
+            secret_key_enc = account.secret_key_enc
 
-                role_arn = account.role_arn
-                sts_external_id = account.sts_external_id
-                region = account.region or "us-east-1"
-                account_id = account.external_id
+        if provider == "aws":
+            if connection_type != "role" or not role_arn or not sts_external_id:
+                log.error(
+                    "Cloud account %s is not configured for STS role-based access", cloud_account_id
+                )
+                return None
+            import boto3
+            deployer_session = boto3.Session(
+                aws_access_key_id=settings.LOOMARIS_DEPLOYER_ACCESS_KEY,
+                aws_secret_access_key=settings.LOOMARIS_DEPLOYER_SECRET_KEY,
+                region_name="us-east-1",
+            )
+            sts = deployer_session.client("sts")
+            resp = sts.assume_role(
+                RoleArn=role_arn,
+                RoleSessionName=f"loomaris-deploy-{cloud_account_id[:8]}",
+                ExternalId=sts_external_id,
+                DurationSeconds=3600,
+            )
+            c = resp["Credentials"]
+            return "aws", {
+                "access_key_id": c["AccessKeyId"],
+                "secret_access_key": c["SecretAccessKey"],
+                "session_token": c["SessionToken"],
+                "region": region or "us-east-1",
+                "account_id": external_id,
+            }
 
-        engine.dispose()
+        if provider == "azure":
+            if credentials_enc:
+                creds = json.loads(decrypt_value(credentials_enc))
+            elif access_key_enc and secret_key_enc and region:
+                # Legacy rows (pre credentials_enc): client_id/client_secret/tenant_id
+                # were stuffed into the AWS-named columns.
+                creds = {
+                    "client_id": decrypt_value(access_key_enc),
+                    "client_secret": decrypt_value(secret_key_enc),
+                    "tenant_id": decrypt_value(region),
+                }
+            else:
+                log.error("Azure cloud account %s has no usable stored credentials", cloud_account_id)
+                return None
+            creds["subscription_id"] = external_id
+            return "azure", creds
 
-        # Assume the org's role using Loomaris's deployer credentials
-        deployer_session = boto3.Session(
-            aws_access_key_id=settings.LOOMARIS_DEPLOYER_ACCESS_KEY,
-            aws_secret_access_key=settings.LOOMARIS_DEPLOYER_SECRET_KEY,
-            region_name="us-east-1",
-        )
-        sts = deployer_session.client("sts")
-        resp = sts.assume_role(
-            RoleArn=role_arn,
-            RoleSessionName=f"loomaris-deploy-{cloud_account_id[:8]}",
-            ExternalId=sts_external_id,
-            DurationSeconds=3600,
-        )
-        c = resp["Credentials"]
-        return {
-            "access_key_id": c["AccessKeyId"],
-            "secret_access_key": c["SecretAccessKey"],
-            "session_token": c["SessionToken"],
-            "region": region,
-            "account_id": account_id,
-        }
+        if provider == "gcp":
+            if not credentials_enc:
+                log.error("GCP cloud account %s has no stored credentials", cloud_account_id)
+                return None
+            creds = json.loads(decrypt_value(credentials_enc))
+            return "gcp", creds
+
+        log.error("Unsupported cloud provider on account %s: %r", cloud_account_id, provider)
+        return None
 
     except Exception as exc:
-        log.error("Failed to retrieve cloud credentials via STS: %s", exc)
+        log.error("Failed to retrieve cloud credentials: %s", exc)
         return None
 
 
 def _get_org_plan(org_slug: str) -> str:
     try:
-        from sqlalchemy import create_engine, text
-        from sqlalchemy.orm import Session
-        from app.core.config import settings
+        from sqlalchemy import text
 
-        sync_url = settings.DATABASE_URL.replace("+asyncpg", "")
-        engine = create_engine(sync_url)
+        from app.database import sync_platform_session
 
-        with engine.connect() as conn:
-            conn.execute(text("SET search_path TO platform, public"))
-            with Session(conn) as session:
-                org = session.execute(
-                    text("SELECT plan FROM platform.organizations WHERE slug = :slug"),
-                    {"slug": org_slug},
-                ).fetchone()
-                plan = org[0] if org else "pro"
-        engine.dispose()
-        return plan
+        with sync_platform_session() as session:
+            org = session.execute(
+                text("SELECT plan FROM platform.organizations WHERE slug = :slug"),
+                {"slug": org_slug},
+            ).fetchone()
+            return org[0] if org else "pro"
     except Exception:
         return "pro"

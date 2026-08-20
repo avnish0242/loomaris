@@ -7,7 +7,7 @@ the state is not found and destroy will silently no-op.
 import logging
 
 from app.workers.celery_app import celery_app
-from app.workers.deploy_task import _get_aws_creds, _update_deployment_sync
+from app.workers.deploy_task import _get_provider_creds, _update_deployment_sync
 
 log = logging.getLogger(__name__)
 
@@ -34,13 +34,14 @@ def cloud_destroy_task(
     log.info("Starting destroy task: deployment=%s stack=%s", deployment_id, stack_name)
     _update_deployment_sync(deployment_id, org_slug, status="destroying")
 
-    aws_creds = _get_aws_creds(cloud_account_id, org_slug)
-    if not aws_creds:
+    resolved = _get_provider_creds(cloud_account_id, org_slug)
+    if not resolved:
         _update_deployment_sync(deployment_id, org_slug, status="failed",
                                 outputs={"error": "Cloud account not found or not verified"})
         return {"success": False, "error": "Cloud credentials unavailable"}
+    provider, creds = resolved
 
-    result = pulumi_destroy(stack_name=stack_name, aws_creds=aws_creds)
+    result = pulumi_destroy(stack_name=stack_name, provider_creds=creds, provider=provider)
 
     if not result.success:
         log.error("Destroy failed for stack %s: %s", stack_name, result.error)

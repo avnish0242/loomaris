@@ -20,6 +20,11 @@ from app.services.cost_engine.azure_pricing import (
     get_functions_price,
 )
 from app.services.cost_engine.cap_enforcer import CostCapResult, check_cap
+from app.services.cost_engine.gcp_pricing import (
+    get_cloud_functions_price,
+    get_cloud_run_price,
+    get_gcs_price,
+)
 from app.services.cost_engine.tier_projector import BaseResourceCost, TierEstimate, project_tiers
 from app.services.iac.detector import AppDeployTarget
 
@@ -70,6 +75,30 @@ def _estimate_azure_base(target: AppDeployTarget) -> BaseResourceCost:
     return BaseResourceCost(
         compute_monthly=get_container_apps_price(vcpu=0.5, memory_gb=1.0),
         storage_monthly=get_blob_storage_price(storage_gb=1.0),
+        data_transfer_monthly=Decimal("0"),
+        managed_services_monthly=Decimal("0"),
+    )
+
+
+def _estimate_gcp_base(target: AppDeployTarget) -> BaseResourceCost:
+    """Compute baseline monthly costs for the GCP equivalent."""
+    if target.type == "static":
+        return BaseResourceCost(
+            compute_monthly=Decimal("0"),
+            storage_monthly=get_gcs_price(storage_gb=1.0),
+            data_transfer_monthly=Decimal("0"),
+            managed_services_monthly=Decimal("0"),
+        )
+    if target.type == "lambda":
+        return BaseResourceCost(
+            compute_monthly=get_cloud_functions_price(invocations_per_month=100_000),
+            storage_monthly=get_gcs_price(storage_gb=0.5),
+            data_transfer_monthly=Decimal("0"),
+            managed_services_monthly=Decimal("0"),
+        )
+    return BaseResourceCost(
+        compute_monthly=get_cloud_run_price(vcpu=0.5, memory_gb=0.5),
+        storage_monthly=get_gcs_price(storage_gb=1.0),
         data_transfer_monthly=Decimal("0"),
         managed_services_monthly=Decimal("0"),
     )
@@ -138,6 +167,10 @@ def estimate_costs(
     if "azure" in cloud_providers:
         azure_base = _estimate_azure_base(target)
         tier_estimates["azure"] = project_tiers(azure_base)
+
+    if "gcp" in cloud_providers:
+        gcp_base = _estimate_gcp_base(target)
+        tier_estimates["gcp"] = project_tiers(gcp_base)
 
     # Hard cap check against the 1k_users tier (typical first production tier)
     cap_result: CostCapResult | None = None
