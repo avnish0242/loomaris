@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     ForeignKey,
@@ -126,7 +127,37 @@ class CloudAccount(Base):
     access_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     secret_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     region: Mapped[str | None] = mapped_column(String(50), nullable=True, default="us-east-1")
+    # Added by migration 011 — generic encrypted credentials blob (Fernet-encrypted JSON string).
+    # New Azure connections and all GCP connections write here; AWS + legacy Azure rows keep
+    # using the columns above. cloud_service.get_credentials() reads this first, falls back
+    # to the legacy AWS-shaped columns when this is null.
+    credentials_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     organization: Mapped["Organization"] = relationship(back_populates="cloud_accounts")
+
+
+class GitHubConnection(Base):
+    """Org-level GitHub App installation — added by migration 012.
+
+    One active installation per org. Distinct from User.github_sub (login identity);
+    this is the export/push credential, scoped and revocable independently of login.
+    """
+    __tablename__ = "github_connections"
+    __table_args__ = {"schema": "platform"}
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("platform.organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    installation_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    account_login: Mapped[str] = mapped_column(String(255), nullable=False)
+    account_type: Mapped[str] = mapped_column(String(20), nullable=False)  # User | Organization
+    connected_by_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # active | suspended | uninstalled
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="active")
+    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    organization: Mapped["Organization"] = relationship()

@@ -36,6 +36,10 @@ CREATE TABLE IF NOT EXISTS {schema}.chat_turns (
     git_commit_sha VARCHAR(40),
     token_count INTEGER,
     scan_result JSONB,
+    pending_tool_use_id TEXT,
+    pending_tool_name TEXT,
+    pending_tool_input JSONB,
+    tool_status TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -49,6 +53,9 @@ CREATE TABLE IF NOT EXISTS {schema}.deployments (
     pulumi_stack_id VARCHAR(255),
     outputs JSONB,
     cost_snapshot JSONB,
+    commit_sha VARCHAR(40),
+    bypassed_simulation_gate BOOLEAN NOT NULL DEFAULT FALSE,
+    cloud_provider VARCHAR(20),
     deployed_at TIMESTAMPTZ,
     destroyed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -89,6 +96,7 @@ CREATE TABLE IF NOT EXISTS {schema}.simulation_sessions (
     ttl_seconds INTEGER NOT NULL DEFAULT 600,
     expires_at TIMESTAMPTZ,
     cost_usd NUMERIC(8,6),
+    commit_sha VARCHAR(40),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

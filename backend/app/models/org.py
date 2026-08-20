@@ -1,6 +1,16 @@
 import uuid
 
-from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+)
 from sqlalchemy.dialects.postgresql import INET, JSONB, UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -61,6 +71,13 @@ class ChatTurn(Base):
     git_commit_sha = Column(String(40), nullable=True)
     token_count = Column(Integer, nullable=True)
     scan_result = Column(JSONB, nullable=True)
+    # Pending tool-call state — set when the assistant turn ends on a
+    # side-effecting tool_use (simulate_app/deploy_app) awaiting user confirmation.
+    # tool_status: pending | approved | denied | resolved
+    pending_tool_use_id = Column(Text, nullable=True)
+    pending_tool_name = Column(Text, nullable=True)
+    pending_tool_input = Column(JSONB, nullable=True)
+    tool_status = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     session = relationship("ChatSession", back_populates="turns")
@@ -79,6 +96,12 @@ class Deployment(Base):
     pulumi_stack_id = Column(String(255), nullable=True)
     outputs = Column(JSONB, nullable=True)
     cost_snapshot = Column(JSONB, nullable=True)
+    # git commit sha this deployment was built from (audit trail for the simulation gate)
+    commit_sha = Column(String(40), nullable=True)
+    # True if the user explicitly bypassed the "must have a running simulation
+    # of the current commit" gate via the deploy_without_preview override.
+    bypassed_simulation_gate = Column(Boolean, nullable=False, server_default="false")
+    cloud_provider = Column(String(20), nullable=True)
     deployed_at = Column(DateTime(timezone=True), nullable=True)
     destroyed_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -130,4 +153,8 @@ class SimulationSession(Base):
     ttl_seconds = Column(Integer, nullable=False, server_default="600")
     expires_at = Column(DateTime(timezone=True), nullable=True)
     cost_usd = Column(Numeric(8, 6), nullable=True)
+    # Real git HEAD sha (from git_service.get_head_sha) at simulation launch —
+    # NOT the sha256 content-hash used elsewhere in sim_service for image tagging.
+    # Deploy gate compares this against the app's current HEAD.
+    commit_sha = Column(String(40), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

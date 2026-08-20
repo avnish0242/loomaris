@@ -28,10 +28,18 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_SECRET: str = ""
     GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/v1/auth/google/callback"
 
-    # GitHub OAuth
+    # GitHub OAuth (login only — see GITHUB_APP_* below for the export/push integration)
     GITHUB_CLIENT_ID: str = ""
     GITHUB_CLIENT_SECRET: str = ""
     GITHUB_REDIRECT_URI: str = "http://localhost:8000/api/v1/auth/github/callback"
+
+    # GitHub App (repo export/push) — provisioned once per environment via the manifest
+    # flow (GET /api/v1/github/manifest-redirect as a superadmin). Empty until that
+    # one-time setup is completed; the export feature is inert without these.
+    GITHUB_APP_ID: str = ""
+    GITHUB_APP_PRIVATE_KEY: str = ""
+    GITHUB_APP_SLUG: str = ""
+    GITHUB_APP_WEBHOOK_SECRET: str = ""
 
     # Zoho OAuth
     ZOHO_CLIENT_ID: str = ""
