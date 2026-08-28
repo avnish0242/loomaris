@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
@@ -170,8 +171,17 @@ async def _generate_title(api_key: str, user_message: str, assistant_snippet: st
         return user_message[:50]
 
 
+def _slugify(name: str) -> str:
+    """Turn arbitrary text (including raw user chat messages, not just a
+    dedicated "create app" form field) into a safe git_service.REPOS_ROOT
+    path segment: lowercase, only [a-z0-9-], no leading/trailing/repeated
+    hyphens, no "." or "/" that could escape the repos directory."""
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return slug[:80] or "app"
+
+
 async def get_or_create_app(db, *, name: str, app_type: str = "web") -> App:
-    slug = name.lower().replace(" ", "-").replace("_", "-")
+    slug = _slugify(name)
     result = await db.execute(select(App).where(App.slug == slug))
     app = result.scalar_one_or_none()
     if not app:
@@ -360,6 +370,29 @@ async def stream_chat(
     # ── Commit generated files to git ─────────────────────────────────────────
     commit_sha: str | None = None
     generated_files = extract_files(full_response)
+
+    # A session started from a standalone "New conversation" (POST /chat/sessions,
+    # no app_id) has no linked App until now — get_or_create_app() is otherwise only
+    # ever called from the explicit POST /apps route. Without this, generated files
+    # here are silently discarded: no git commit, no files_committed event, no
+    # ActionBar, and simulate_app/deploy_app calls Claude makes have nothing to act
+    # on. Lazily create + link one the first time a session actually produces files.
+    if generated_files and not app_slug and chat_session:
+        # The auto-generated session title (_schedule_title_update) hasn't run yet on
+        # a first turn — title is still the "New conversation" placeholder — so derive
+        # the name from the user's message instead. Suffix with part of the session id
+        # so two unrelated sessions describing similarly-named apps ("calculator") don't
+        # collide on get_or_create_app's slug lookup and silently share one app/repo.
+        base_name = (
+            chat_session.title
+            if chat_session.title and chat_session.title != "New conversation"
+            else user_message[:60]
+        )
+        app_obj = await get_or_create_app(db, name=f"{base_name} {str(session_id)[:8]}")
+        chat_session.app_id = app_obj.id
+        await db.commit()
+        app_slug = app_obj.slug
+
     if generated_files and app_slug:
         try:
             commit_sha = commit_files(
